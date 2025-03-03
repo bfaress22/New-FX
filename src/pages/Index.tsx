@@ -23,7 +23,7 @@ interface StressTestScenario {
 }
 
 interface StrategyComponent {
-  type: 'call' | 'put';
+  type: 'call' | 'put' | 'swap';
   strike: number;
   strikeType: 'percent' | 'absolute';
   volatility: number;
@@ -65,6 +65,21 @@ interface SavedScenario {
   results: Result[];
   payoffData: Array<{ price: number; payoff: number }>;
   stressTest?: StressTestScenario;
+}
+
+interface ImpliedVolatility {
+  [key: string]: number; // Format: "YYYY-MM": volatility
+}
+
+interface HistoricalDataPoint {
+  date: string;
+  price: number;
+}
+
+interface MonthlyStats {
+  month: string;
+  avgPrice: number;
+  volatility: number;
 }
 
 const DEFAULT_SCENARIOS = {
@@ -291,10 +306,31 @@ const Index = () => {
     }));
   };
 
+  // Add these new states
+  const [useImpliedVol, setUseImpliedVol] = useState(false);
+  const [impliedVolatilities, setImpliedVolatilities] = useState<ImpliedVolatility>({});
+
+  // Historical data state
+  const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
+  const [monthlyStats, setMonthlyStats] = useState<MonthlyStats[]>([]);
+
+  // Ajoutez ces états
+  const [showHistoricalData, setShowHistoricalData] = useState(true);
+  const [showMonthlyStats, setShowMonthlyStats] = useState(true);
+
   // Calculate Black-Scholes Option Price
-  const calculateOptionPrice = (type, S, K, r, t, sigma) => {
-    const d1 = (Math.log(S/K) + (r + sigma**2/2)*t) / (sigma*Math.sqrt(t));
-    const d2 = d1 - sigma*Math.sqrt(t);
+  const calculateOptionPrice = (type, S, K, r, t, sigma, date?) => {
+    // Utilisez la volatilité implicite si disponible
+    let effectiveSigma = sigma;
+    if (date && useImpliedVol) {
+      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+      if (impliedVolatilities[monthKey]) {
+        effectiveSigma = impliedVolatilities[monthKey] / 100;
+      }
+    }
+
+    const d1 = (Math.log(S/K) + (r + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
+    const d2 = d1 - effectiveSigma*Math.sqrt(t);
     
     const Nd1 = (1 + erf(d1/Math.sqrt(2)))/2;
     const Nd2 = (1 + erf(d2/Math.sqrt(2)))/2;
@@ -319,7 +355,7 @@ const Index = () => {
     x = Math.abs(x);
     
     const t = 1.0/(1.0 + p*x);
-    const y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t*Math.exp(-x*x));
+    const y = 1.0 - ((((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*Math.exp(-x*x));
     
     return sign*y;
   };
@@ -370,7 +406,8 @@ const Index = () => {
           strike,
           params.interestRate/100,
           1, // 1 year to maturity for payoff diagram
-          option.volatility/100
+          option.volatility/100,
+          new Date() // Ajoutez la date courante
         );
 
         if (option.type === 'call') {
@@ -423,103 +460,118 @@ const Index = () => {
   // Calculate detailed results
   const calculateResults = () => {
     const startDate = new Date(params.startDate);
-    const months = [];
-    let currentDate = new Date(startDate);
-
-    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
-    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
-
-    if (remainingDaysInMonth > 0) {
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
-    }
-
-    for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
-      currentDate.setMonth(currentDate.getMonth() + 1);
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
-    }
-
-    // If simulation is enabled, generate new real prices
-    if (realPriceParams.useSimulation) {
-      const simulatedPrices = simulateRealPrices(months, startDate);
-      setRealPrices(simulatedPrices);
-    }
+    const months = Array.from({ length: params.monthsToHedge }, (_, i) => {
+        const date = new Date(startDate);
+        date.setMonth(date.getMonth() + i + 1, 0);
+        return date;
+    });
 
     const timeToMaturities = months.map(date => {
-      const diffTime = Math.abs(date.getTime() - startDate.getTime());
-      return diffTime / (325.25 * 24 * 60 * 60 * 1000);
+        const diffTime = Math.abs(date.getTime() - startDate.getTime());
+        return diffTime / (365.25 * 24 * 60 * 60 * 1000);
     });
 
     const monthlyVolume = params.totalVolume / params.monthsToHedge;
 
     const detailedResults = months.map((date, i) => {
-      // Get forward price
-      const forward = (() => {
-        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-        const timeDiff = date.getTime() - startDate.getTime();
-        return manualForwards[monthKey] || 
-          initialSpotPrice * Math.exp(params.interestRate/100 * timeDiff/(1000 * 60 * 60 * 24 * 365));
-      })();
-
-      // Get real price and store monthKey for reuse
-      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-      const realPrice = realPrices[monthKey] || forward;
-
-      const t = timeToMaturities[i];
-
-      // Calculate option prices using forward price (for initial cost)
-      const optionPrices = strategy.map((option, optIndex) => {
-        const strike = option.strikeType === 'percent' ? 
-          params.spotPrice * (option.strike/100) : 
-          option.strike;
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
         
+        // Trouver les statistiques mensuelles correspondantes
+        const monthStats = monthlyStats.find(stat => stat.month === monthKey);
+        
+        // Calculer le forward price
+        const forward = manualForwards[monthKey] || 
+            params.spotPrice * Math.exp(params.interestRate / 100 * timeToMaturities[i]);
+
+        // Utiliser les valeurs des statistiques mensuelles
+        const realPrice = monthStats?.avgPrice || forward;
+        const impliedVolatility = monthStats ? monthStats.volatility * 100 : null;
+
+        // Calculer le prix du swap une fois pour tous les swaps
+        const swapPrice = calculateSwapPrice(
+            months.map((_, idx) => {
+                const monthKey = `${_.getFullYear()}-${_.getMonth() + 1}`;
+                return manualForwards[monthKey] || 
+                    initialSpotPrice * Math.exp(params.interestRate / 100 * timeToMaturities[idx]);
+            }),
+            timeToMaturities,
+            params.interestRate / 100
+        );
+
+        // Séparer les swaps des options
+        const swaps = strategy.filter(s => s.type === 'swap');
+        const options = strategy.filter(s => s.type !== 'swap');
+
+        // Calculer les prix des options comme avant
+        const optionPrices = options.map((option, optIndex) => {
+            const strike = option.strikeType === 'percent' ? 
+                params.spotPrice * (option.strike / 100) : 
+                option.strike;
+            
+            return {
+                type: option.type,
+                price: calculateOptionPrice(
+                    option.type,
+                    forward,
+                    strike,
+                    params.interestRate / 100,
+                    timeToMaturities[i],
+                    option.volatility / 100,
+                    date
+                ),
+                quantity: option.quantity / 100,
+                strike: strike,
+                label: `${option.type === 'call' ? 'Call' : 'Put'} Price ${optIndex + 1}`
+            };
+        });
+
+        // Calculate strategy price
+        const strategyPrice = optionPrices.reduce((total, opt) => 
+            total + (opt.price * opt.quantity), 0);
+
+        // Calculate payoff using real price
+        const totalPayoff = optionPrices.reduce((sum, opt) => {
+            const payoff = opt.type === 'call' 
+                ? Math.max(realPrice - opt.strike, 0)
+                : Math.max(opt.strike - realPrice, 0);
+            return sum + (payoff * opt.quantity);
+        }, 0);
+
+        // Ensuite, utiliser ces variables dans le calcul du hedgedCost
+        const totalSwapPercentage = swaps.reduce((sum, swap) => sum + swap.quantity, 0) / 100;
+        const hedgedPrice = totalSwapPercentage * swapPrice + (1 - totalSwapPercentage) * realPrice;
+
+        const hedgedCost = -(monthlyVolume * hedgedPrice) - 
+            (monthlyVolume * (1 - totalSwapPercentage) * strategyPrice) + 
+            (monthlyVolume * (1 - totalSwapPercentage) * totalPayoff);
+
         return {
-          type: option.type,
-          price: calculateOptionPrice(
-            option.type,
+            date: `${monthNames[date.getMonth()]} ${date.getFullYear()}`,
+            timeToMaturity: timeToMaturities[i],
             forward,
-            strike,
-            params.interestRate/100,
-            t,
-            option.volatility/100
-          ),
-          quantity: option.quantity/100,
-          strike: strike,
-          label: `${option.type === 'call' ? 'Call' : 'Put'} Price ${optIndex + 1}`
+            realPrice,
+            impliedVolatility,
+            optionPrices: [
+                ...optionPrices,
+                ...swaps.map(swap => ({
+                    type: 'swap',
+                    price: swapPrice,
+                    quantity: swap.quantity / 100,
+                    strike: swap.strike,
+                    label: 'Swap Price'
+                }))
+            ],
+            strategyPrice,
+            totalPayoff,
+            monthlyVolume,
+            hedgedCost,
+            unhedgedCost: -(monthlyVolume * realPrice),
+            deltaPnL: hedgedCost - (-(monthlyVolume * realPrice))
         };
-      });
-
-      // Calculate strategy price (cost of options)
-      const strategyPrice = optionPrices.reduce((total, opt) => 
-        total + (opt.price * opt.quantity), 0);
-
-      // Calculate payoff using real price
-      const totalPayoff = optionPrices.reduce((sum, opt) => {
-        const payoff = opt.type === 'call' 
-          ? Math.max(realPrice - opt.strike, 0)
-          : Math.max(opt.strike - realPrice, 0);
-        return sum + (payoff * opt.quantity);
-      }, 0);
-
-      // Calculate hedged cost using real price and including payoff
-      const hedgedCost = -(monthlyVolume * realPrice) - (monthlyVolume * strategyPrice) + (monthlyVolume * totalPayoff);
-      const unhedgedCost = -(monthlyVolume * realPrice);
-
-      return {
-        date: `${monthNames[date.getMonth()]} ${date.getFullYear()}`,
-        timeToMaturity: t,
-        forward,
-        realPrice,
-        optionPrices,
-        strategyPrice,
-        totalPayoff,
-        monthlyVolume,
-        hedgedCost,
-        unhedgedCost,
-        deltaPnL: hedgedCost - unhedgedCost
-      };
     });
 
     setResults(detailedResults);
+    setUseImpliedVol(monthlyStats.length > 0);
     calculatePayoff();
   };
 
@@ -990,6 +1042,212 @@ const Index = () => {
     }
   };
 
+  // Ajoutez cette fonction pour gérer les changements de volatilité implicite
+  const handleImpliedVolChange = (monthKey: string, value: number) => {
+    setImpliedVolatilities(prev => ({
+      ...prev,
+      [monthKey]: value
+    }));
+  };
+
+  // Fonction pour calculer le prix du swap (moyenne des forwards actualisés)
+  const calculateSwapPrice = (forwards: number[], timeToMaturities: number[], r: number) => {
+    const weightedSum = forwards.reduce((sum, forward, i) => {
+      return sum + forward * Math.exp(-r * timeToMaturities[i]);
+    }, 0);
+    return weightedSum / forwards.length;
+  };
+
+  // Ajoutez cette fonction d'aide pour nettoyer les lignes CSV
+  const cleanCSVLine = (line: string) => {
+    return line
+      .replace(/\r/g, '') // Enlever les retours chariot
+      .replace(/^"|"$/g, '') // Enlever les guillemets au début et à la fin
+      .split('","'); // Séparer sur les "," avec guillemets
+  };
+
+  // Modifiez la fonction handleFileUpload
+  const handleFileUpload = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,.txt';
+    
+    input.onchange = async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const text = event.target?.result as string;
+            const rows = text.split('\n').filter(row => row.trim());
+            
+            const data: HistoricalDataPoint[] = rows
+                .slice(1) // Ignore the header row
+                .map(row => {
+                    try {
+                        const columns = cleanCSVLine(row);
+                        if (columns.length < 2) {
+                            console.error('Invalid row format:', row);
+                            return null; // Ignore invalid rows
+                        }
+                        
+                        // Parse date from first column (DD/MM/YYYY format)
+                        const dateStr = columns[0];
+                        const [day, month, year] = dateStr.split('/');
+                        const date = new Date(`${year}-${month}-${day}`);
+                        
+                        // Validate date
+                        if (isNaN(date.getTime())) {
+                            console.error('Invalid date:', dateStr);
+                            return null; // Ignore invalid dates
+                        }
+
+                        // Parse price from the "Dernier" column (second column)
+                        const priceStr = columns[1].replace('.', '').replace(',', '.'); // Convert to a valid number format
+                        const price = Number(priceStr);
+
+                        if (isNaN(price)) {
+                            console.error('Invalid price:', priceStr);
+                            return null; // Ignore invalid prices
+                        }
+
+                        return {
+                            date: date.toISOString().split('T')[0],
+                            price: price
+                        };
+                    } catch (error) {
+                        console.error('Error parsing row:', row, error);
+                        return null;
+                    }
+                })
+                .filter(row => row !== null) as HistoricalDataPoint[];
+
+            if (data.length > 0) {
+                console.log('Imported data:', data);
+                setHistoricalData(data.sort((a, b) => b.date.localeCompare(a.date))); // Sort by date descending
+                calculateMonthlyStats(data);
+            } else {
+                alert('No valid data found in CSV file. Please check the format.');
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    input.click();
+  };
+
+  // Fonction pour mettre à jour les données historiques manuellement
+  const updateHistoricalData = (index: number, field: 'date' | 'price', value: string | number) => {
+    const newData = [...historicalData];
+    newData[index] = {
+      ...newData[index],
+      [field]: value
+    };
+    setHistoricalData(newData.sort((a, b) => a.date.localeCompare(b.date)));
+    calculateMonthlyStats(newData);
+  };
+
+  // Fonction pour calculer les statistiques mensuelles
+  const calculateMonthlyStats = (data: HistoricalDataPoint[]) => {
+    const monthlyData: { [key: string]: number[] } = {};
+    
+    // Grouper les prix par mois
+    data.forEach(point => {
+        const date = new Date(point.date);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        if (!monthlyData[monthKey]) {
+            monthlyData[monthKey] = [];
+        }
+        monthlyData[monthKey].push(point.price);
+    });
+
+    // Calculer les statistiques pour chaque mois
+    const stats = Object.entries(monthlyData).map(([month, prices]) => {
+        const avgPrice = prices.reduce((sum, price) => sum + price, 0) / prices.length;
+        
+        // Calculer la volatilité historique
+        const returns = prices.slice(1).map((price, i) => 
+            Math.log(price / prices[i])
+        );
+        
+        let volatility = null;
+        if (returns.length > 0) {
+            const avgReturn = returns.reduce((sum, ret) => sum + ret, 0) / returns.length;
+            const variance = returns.reduce((sum, ret) => 
+                sum + Math.pow(ret - avgReturn, 2), 0
+            ) / (returns.length - 1);
+            volatility = Math.sqrt(variance * 252);
+        }
+
+        return { month, avgPrice, volatility };
+    });
+
+    // Trier par date croissante
+    setMonthlyStats(stats.sort((a, b) => a.month.localeCompare(b.month)));
+
+    // Mettre à jour les prix réels et les volatilités pour la période sélectionnée
+    const startDate = new Date(params.startDate);
+    const endDate = new Date(startDate);
+    endDate.setMonth(startDate.getMonth() + params.monthsToHedge);
+
+    const newRealPrices = {};
+    const newImpliedVols = {};
+    
+    stats.forEach(stat => {
+        if (stat.avgPrice !== null) {
+            newRealPrices[stat.month] = stat.avgPrice;
+        }
+        if (stat.volatility !== null) {
+            newImpliedVols[stat.month] = stat.volatility * 100;
+        }
+    });
+
+    setRealPrices(newRealPrices);
+    setImpliedVolatilities(newImpliedVols);
+    setUseImpliedVol(true);
+    calculateResults();
+  };
+
+  // Ajouter un bouton pour ajouter une nouvelle ligne
+  const addHistoricalDataRow = () => {
+    setHistoricalData([
+      ...historicalData,
+      {
+        date: new Date().toISOString().split('T')[0],
+        price: 0
+      }
+    ]);
+  };
+
+  // Fonction pour ajouter un swap
+  const addSwap = () => {
+    // Calculer le prix du swap si on a des résultats
+    let swapPrice = params.spotPrice;
+    if (results) {
+      const forwards = results.map(r => r.forward);
+      const times = results.map(r => r.timeToMaturity);
+      swapPrice = calculateSwapPrice(forwards, times, params.interestRate/100);
+    }
+
+    setStrategy([...strategy, {
+      type: 'swap',
+      strike: swapPrice,
+      strikeType: 'absolute',
+      volatility: 0, // Non utilisé pour le swap
+      quantity: 100  // 100% par défaut
+    }]);
+  };
+
+  // Ajouter cette fonction pour effacer les données
+  const clearHistoricalData = () => {
+    setHistoricalData([]);
+    setMonthlyStats([]);
+    setRealPrices({});
+    setImpliedVolatilities({});
+    setUseImpliedVol(false);
+    calculateResults();
+  };
+
   return (
     <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
       <style type="text/css" media="print">
@@ -1032,6 +1290,7 @@ const Index = () => {
         <TabsList>
           <TabsTrigger value="parameters">Strategy Parameters</TabsTrigger>
           <TabsTrigger value="stress">Stress Testing</TabsTrigger>
+          <TabsTrigger value="backtest">Historical Backtest</TabsTrigger>
         </TabsList>
         
         <TabsContent value="parameters">
@@ -1094,33 +1353,15 @@ const Index = () => {
                   />
                   <label>Use Monte Carlo Simulation</label>
                 </div>
-                
-                {realPriceParams.useSimulation && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Volatility (%)</label>
-                      <Input
-                        type="number"
-                        value={realPriceParams.volatility * 100}
-                        onChange={(e) => setRealPriceParams(prev => ({
-                          ...prev,
-                          volatility: Number(e.target.value) / 100
-                        }))}
-                      />
+                <div className="flex items-center mb-4">
+                  <input
+                    type="checkbox"
+                    checked={useImpliedVol}
+                    onChange={(e) => setUseImpliedVol(e.target.checked)}
+                    className="mr-2"
+                  />
+                  <label>Use Monthly Implied Volatility</label>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Drift (%)</label>
-                      <Input
-                        type="number"
-                        value={realPriceParams.drift * 100}
-                        onChange={(e) => setRealPriceParams(prev => ({
-                          ...prev,
-                          drift: Number(e.target.value) / 100
-                        }))}
-                      />
-                    </div>
-                  </div>
-                )}
               </div>
             </CardContent>
           </Card>
@@ -1128,30 +1369,61 @@ const Index = () => {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Strategy Components</CardTitle>
+              <div className="flex gap-2">
               <Button onClick={addOption} className="flex items-center gap-2">
                 <Plus size={16} /> Add Option
               </Button>
+                <Button onClick={addSwap} className="flex items-center gap-2">
+                  <Plus size={16} /> Add Swap
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {strategy.map((option, index) => (
+                {strategy.map((component, index) => (
                   <div key={index} className="grid grid-cols-6 gap-4 items-center p-4 border rounded">
                     <div>
                       <label className="block text-sm font-medium mb-1">Type</label>
                       <select
                         className="w-full p-2 border rounded"
-                        value={option.type}
+                        value={component.type}
                         onChange={(e) => updateOption(index, 'type', e.target.value)}
+                        disabled={component.type === 'swap'}
                       >
                         <option value="call">Call</option>
                         <option value="put">Put</option>
+                        <option value="swap">Swap</option>
                       </select>
                     </div>
+                    {component.type === 'swap' ? (
+                      <>
+                        <div className="col-span-2">
+                          <label className="block text-sm font-medium mb-1">Swap Price</label>
+                          <Input
+                            type="number"
+                            value={component.strike}
+                            disabled
+                            className="bg-gray-100"
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                          <Input
+                            type="number"
+                            value={component.quantity}
+                            onChange={(e) => updateOption(index, 'quantity', Number(e.target.value))}
+                            min="0"
+                            max="100"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
                     <div>
                       <label className="block text-sm font-medium mb-1">Strike</label>
                       <Input
                         type="number"
-                        value={option.strike}
+                            value={component.strike}
                         onChange={(e) => updateOption(index, 'strike', Number(e.target.value))}
                       />
                     </div>
@@ -1159,7 +1431,7 @@ const Index = () => {
                       <label className="block text-sm font-medium mb-1">Strike Type</label>
                       <select
                         className="w-full p-2 border rounded"
-                        value={option.strikeType}
+                            value={component.strikeType}
                         onChange={(e) => updateOption(index, 'strikeType', e.target.value)}
                       >
                         <option value="percent">Percentage</option>
@@ -1170,7 +1442,7 @@ const Index = () => {
                       <label className="block text-sm font-medium mb-1">Volatility (%)</label>
                       <Input
                         type="number"
-                        value={option.volatility}
+                            value={component.volatility}
                         onChange={(e) => updateOption(index, 'volatility', Number(e.target.value))}
                       />
                     </div>
@@ -1178,10 +1450,12 @@ const Index = () => {
                       <label className="block text-sm font-medium mb-1">Quantity (%)</label>
                       <Input
                         type="number"
-                        value={option.quantity}
+                            value={component.quantity}
                         onChange={(e) => updateOption(index, 'quantity', Number(e.target.value))}
                       />
                     </div>
+                      </>
+                    )}
                     <div className="flex items-end">
                       <Button
                         variant="destructive"
@@ -1234,6 +1508,7 @@ const Index = () => {
                       >
                         <option value="call">Call</option>
                         <option value="put">Put</option>
+                        <option value="swap">Swap</option>
                       </select>
                     </div>
                     <div>
@@ -1383,6 +1658,113 @@ const Index = () => {
             )}
           </div>
         </TabsContent>
+
+        <TabsContent value="backtest">
+          <Card>
+            <CardHeader>
+              <CardTitle>Historical Data Input</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setShowHistoricalData(!showHistoricalData)}
+                    >
+                      {showHistoricalData ? 'Hide' : 'Show'} Historical Data
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setShowMonthlyStats(!showMonthlyStats)}
+                    >
+                      {showMonthlyStats ? 'Hide' : 'Show'} Monthly Statistics
+                    </Button>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button 
+                      onClick={addHistoricalDataRow} 
+                      variant="outline" 
+                      className="flex items-center gap-2"
+                    >
+                      <Plus size={16} /> Add Row
+                    </Button>
+                    <Button 
+                      onClick={handleFileUpload} 
+                      className="flex items-center gap-2"
+                    >
+                      <Plus size={16} /> Import Historical Data
+                    </Button>
+                    <Button 
+                      onClick={clearHistoricalData}
+                      variant="destructive" 
+                      className="flex items-center gap-2"
+                    >
+                      <Trash2 size={16} /> Clear Data
+                    </Button>
+                  </div>
+                </div>
+                
+                {showHistoricalData && (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border-collapse">
+                      <thead>
+                        <tr>
+                          <th className="border p-2">Date</th>
+                          <th className="border p-2">Price</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historicalData.map((row, index) => (
+                          <tr key={index}>
+                            <td className="border p-2">
+                              <Input
+                                type="date"
+                                value={row.date}
+                                onChange={(e) => updateHistoricalData(index, 'date', e.target.value)}
+                              />
+                            </td>
+                            <td className="border p-2">
+                              <Input
+                                type="number"
+                                value={row.price}
+                                onChange={(e) => updateHistoricalData(index, 'price', Number(e.target.value))}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {showMonthlyStats && (
+                  <div className="mt-4">
+                    <h3 className="text-lg font-medium mb-2">Monthly Statistics</h3>
+                    <table className="min-w-full border-collapse">
+                      <thead>
+                        <tr>
+                          <th className="border p-2">Month</th>
+                          <th className="border p-2">Average Price</th>
+                          <th className="border p-2">Historical Volatility</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthlyStats.map((stat, index) => (
+                          <tr key={index}>
+                            <td className="border p-2">{stat.month}</td>
+                            <td className="border p-2">{stat.avgPrice.toFixed(2)}</td>
+                            <td className="border p-2">{(stat.volatility * 100).toFixed(2)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
 
       {results && (
@@ -1399,9 +1781,19 @@ const Index = () => {
                       <th className="border p-2">Maturity</th>
                       <th className="border p-2">Time to Maturity</th>
                       <th className="border p-2 bg-gray-50">Forward Price</th>
-                      <th className="border p-2 bg-blue-50">Real Price {realPriceParams.useSimulation ? '(Simulated)' : '(Manual Input)'}</th>
-                      {strategy.map((opt, i) => (
-                        <th key={i} className="border p-2">{opt.type === 'call' ? 'Call' : 'Put'} Price {i + 1}</th>
+                      <th className="border p-2 bg-blue-50">Real Price</th>
+                      {useImpliedVol && (
+                        <th className="border p-2 bg-yellow-50">IV (%)</th>
+                      )}
+                      {/* Afficher d'abord les colonnes de swap */}
+                      {strategy.filter(s => s.type === 'swap').map((_, i) => (
+                        <th key={`swap-${i}`} className="border p-2">Swap Price {i + 1}</th>
+                      ))}
+                      {/* Puis afficher les colonnes d'options */}
+                      {strategy.filter(s => s.type !== 'swap').map((opt, i) => (
+                        <th key={`option-${i}`} className="border p-2">
+                          {opt.type === 'call' ? 'Call' : 'Put'} Price {i + 1}
+                        </th>
                       ))}
                       <th className="border p-2">Strategy Price</th>
                       <th className="border p-2">Strategy Payoff</th>
@@ -1412,21 +1804,19 @@ const Index = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {results.map((row, i) => (
+                    {results.map((row, i) => {
+                      const [month, year] = row.date.split(' ');
+                      const monthIndex = monthNames.indexOf(month);
+                      const monthKey = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+                      return (
                       <tr key={i}>
                         <td className="border p-2">{row.date}</td>
                         <td className="border p-2">{row.timeToMaturity.toFixed(4)}</td>
                         <td className="border p-2">
                           <Input
                             type="number"
-                            value={(() => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                              return manualForwards[monthKey] || row.forward.toFixed(2);
-                            })()}
+                            value={manualForwards[monthKey] || row.forward.toFixed(2)}
                             onChange={(e) => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
                               const newValue = e.target.value === '' ? '' : Number(e.target.value);
                               setManualForwards(prev => ({
                                 ...prev,
@@ -1441,16 +1831,10 @@ const Index = () => {
                         <td className="border p-2">
                           <Input
                             type="number"
-                            value={(() => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                              return realPriceParams.useSimulation ? 
-                                row.realPrice.toFixed(2) : 
-                                (realPrices[monthKey] || row.forward);
-                            })()}
+                            value={realPriceParams.useSimulation ? 
+                              row.realPrice.toFixed(2) : 
+                              (realPrices[monthKey] || row.forward)}
                             onChange={(e) => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
                               const newValue = e.target.value === '' ? '' : Number(e.target.value);
                               setRealPrices(prev => ({
                                 ...prev,
@@ -1463,8 +1847,29 @@ const Index = () => {
                             disabled={realPriceParams.useSimulation}
                           />
                         </td>
-                        {row.optionPrices.map((opt, j) => (
-                          <td key={j} className="border p-2">{opt.price.toFixed(2)}</td>
+                          {useImpliedVol && (
+                            <td className="border p-2">
+                              <Input
+                                type="number"
+                                value={impliedVolatilities[monthKey] || ''}
+                                onChange={(e) => handleImpliedVolChange(monthKey, Number(e.target.value))}
+                                onBlur={() => calculateResults()}
+                                className="w-24"
+                                placeholder="Enter IV"
+                              />
+                            </td>
+                          )}
+                          {/* Afficher d'abord les prix des swaps */}
+                          {row.optionPrices
+                            .filter(opt => opt.type === 'swap')
+                            .map((opt, j) => (
+                              <td key={`swap-${j}`} className="border p-2">{opt.price.toFixed(2)}</td>
+                            ))}
+                          {/* Puis afficher les prix des options */}
+                          {row.optionPrices
+                            .filter(opt => opt.type !== 'swap')
+                            .map((opt, j) => (
+                              <td key={`option-${j}`} className="border p-2">{opt.price.toFixed(2)}</td>
                         ))}
                         <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
                         <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
@@ -1473,7 +1878,8 @@ const Index = () => {
                         <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
                         <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1614,7 +2020,7 @@ const Index = () => {
                               })}
                             </td>
                             <td className="border p-2 text-right">
-                              {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2)}%
+                                  {(((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2) + '%')}
                             </td>
                           </tr>
                         ))}
@@ -1667,7 +2073,7 @@ const Index = () => {
                         {(() => {
                           const totalPnL = results.reduce((sum, row) => sum + row.deltaPnL, 0);
                           const totalUnhedgedCost = results.reduce((sum, row) => sum + row.unhedgedCost, 0);
-                          return ((totalPnL / Math.abs(totalUnhedgedCost)) * 100).toFixed(2) + '%';
+                              return (((totalPnL / Math.abs(totalUnhedgedCost)) * 100).toFixed(2) + '%');
                         })()}
                       </td>
                     </tr>
