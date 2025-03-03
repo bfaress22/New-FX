@@ -504,7 +504,7 @@ const Index = () => {
     setActiveStressTest(key);
     const scenario = stressTestScenarios[key];
     if (!scenario) return;
-
+    
     // Calculate stressed spot price with validation
     const stressedSpotPrice = initialSpotPrice * (1 + Number(scenario.priceShock));
     if (isNaN(stressedSpotPrice) || stressedSpotPrice <= 0) {
@@ -543,8 +543,31 @@ const Index = () => {
 
     const startDate = new Date(params.startDate);
 
-    // Calculate forward curve with basis
-    if (scenario.forwardBasis !== undefined) {
+    // Handle special case for contango and backwardation
+    if (key === 'contango' || key === 'backwardation') {
+      const newForwards = {};
+      const rateMultiplier = key === 'contango' ? (1 + scenario.priceShock) : (1 - scenario.priceShock);
+      
+      // Start with the stressed spot price
+      let currentPrice = stressedSpotPrice;
+      
+      // Calculate prices with monthly percentage changes
+      for (let i = 0; i < params.monthsToHedge; i++) {
+        const { monthKey } = getMonthData(startDate, i);
+        
+        // Apply the multiplier for each month after the first month
+        if (i > 0) {
+          currentPrice = currentPrice * rateMultiplier;
+        }
+        
+        if (!isNaN(currentPrice) && currentPrice > 0) {
+          newForwards[monthKey] = currentPrice;
+        }
+      }
+      setManualForwards(newForwards);
+    }
+    // Regular handling for other scenarios with forwardBasis
+    else if (scenario.forwardBasis !== undefined) {
       const newForwards = {};
       for (let i = 0; i < params.monthsToHedge; i++) {
         const { monthKey } = getMonthData(startDate, i);
@@ -1535,55 +1558,62 @@ const Index = () => {
                       <div className="px-3 pb-3">
                         <p className="text-xs text-gray-600 mb-2">{scenario.description}</p>
                         <div className="space-y-2">
-                          <div>
-                            <label className="block text-sm font-medium mb-1">
-                              Volatility (%)
-                              <span className="text-xs text-gray-500 ml-1">
-                                (0-100)
-                              </span>
-                            </label>
-                            <Input
-                              className="h-7"
-                              type="number"
-                              value={scenario.volatility * 100}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (!isNaN(value) && value >= 0) {
-                                  updateScenario(key, 'volatility', value / 100);
-                                }
-                              }}
-                              min="0"
-                              max="100"
-                              step="0.1"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium mb-1">
-                              Drift (%)
-                              <span className="text-xs text-gray-500 ml-1">
-                                (-50 to 50)
-                              </span>
-                            </label>
-                            <Input
-                              className="h-7"
-                              type="number"
-                              value={scenario.drift * 100}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (!isNaN(value) && value >= -50 && value <= 50) {
-                                  updateScenario(key, 'drift', value / 100);
-                                }
-                              }}
-                              min="-50"
-                              max="50"
-                              step="0.1"
-                            />
-                          </div>
+                          {/* Only show volatility and drift for scenarios other than contango and backwardation */}
+                          {key !== 'contango' && key !== 'backwardation' && (
+                            <>
+                              <div>
+                                <label className="block text-sm font-medium mb-1">
+                                  Volatility (%)
+                                  <span className="text-xs text-gray-500 ml-1">
+                                    (0-100)
+                                  </span>
+                                </label>
+                                <Input
+                                  className="h-7"
+                                  type="number"
+                                  value={scenario.volatility * 100}
+                                  onChange={(e) => {
+                                    const value = Number(e.target.value);
+                                    if (!isNaN(value) && value >= 0) {
+                                      updateScenario(key, 'volatility', value / 100);
+                                    }
+                                  }}
+                                  min="0"
+                                  max="100"
+                                  step="0.1"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium mb-1">
+                                  Drift (%)
+                                  <span className="text-xs text-gray-500 ml-1">
+                                    (-50 to 50)
+                                  </span>
+                                </label>
+                                <Input
+                                  className="h-7"
+                                  type="number"
+                                  value={scenario.drift * 100}
+                                  onChange={(e) => {
+                                    const value = Number(e.target.value);
+                                    if (!isNaN(value) && value >= -50 && value <= 50) {
+                                      updateScenario(key, 'drift', value / 100);
+                                    }
+                                  }}
+                                  min="-50"
+                                  max="50"
+                                  step="0.1"
+                                />
+                              </div>
+                            </>
+                          )}
                           <div>
                             <label className="block text-sm font-medium mb-1">
                               Price Shock (%)
                               <span className="text-xs text-gray-500 ml-1">
-                                (-100 to 100)
+                                {key === 'contango' ? '(Monthly price increase %)' : 
+                                 key === 'backwardation' ? '(Monthly price decrease %)' : 
+                                 '(-100 to 100)'}
                               </span>
                             </label>
                             <Input
@@ -1592,16 +1622,17 @@ const Index = () => {
                               value={scenario.priceShock * 100}
                               onChange={(e) => {
                                 const value = Number(e.target.value);
-                                if (!isNaN(value) && value >= -100 && value <= 100) {
+                                if (!isNaN(value) && value >= 0 && value <= 100) {
                                   updateScenario(key, 'priceShock', value / 100);
                                 }
                               }}
-                              min="-100"
+                              min="0"
                               max="100"
                               step="0.1"
                             />
                           </div>
-                          {scenario.forwardBasis !== undefined && (
+                          {/* Display forwardBasis only for scenarios that use it and aren't contango/backwardation */}
+                          {scenario.forwardBasis !== undefined && key !== 'contango' && key !== 'backwardation' && (
                             <div>
                               <label className="block text-sm font-medium mb-1">
                                 Monthly Basis (%)
