@@ -207,92 +207,10 @@ const Index = () => {
   // Stress Test Scenarios
   const [stressTestScenarios, setStressTestScenarios] = useState<Record<string, StressTestScenario>>(() => {
     const savedState = localStorage.getItem('calculatorState');
-    return savedState ? JSON.parse(savedState).stressTestScenarios : {
-      base: {
-        name: "Base Case",
-        description: "Normal market conditions",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: 0,
-        isEditable: true
-      },
-      highVol: {
-        name: "High Volatility",
-        description: "Double volatility scenario",
-        volatility: 0.4,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: 0,
-        isEditable: true
-      },
-      crash: {
-        name: "Market Crash",
-        description: "High volatility, negative drift, price shock",
-        volatility: 0.5,
-        drift: -0.03,
-        priceShock: -0.2,
-        forwardBasis: 0,
-        isEditable: true
-      },
-      bull: {
-        name: "Bull Market",
-        description: "Low volatility, positive drift, upward shock",
-        volatility: 0.15,
-        drift: 0.02,
-        priceShock: 0.1,
-        forwardBasis: 0,
-        isEditable: true
-      },
-      contango: {
-        name: "Contango",
-        description: "Forward prices higher than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: 0.01,
-        isEditable: true
-      },
-      backwardation: {
-        name: "Backwardation",
-        description: "Forward prices lower than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: -0.01,
-        isEditable: true
-      },
-      contangoReal: {
-        name: "Contango (Real Prices)",
-        description: "Real prices higher than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        realBasis: 0.01,
-        isEditable: true
-      },
-      backwardationReal: {
-        name: "Backwardation (Real Prices)",
-        description: "Real prices lower than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        realBasis: -0.01,
-        isEditable: true
-      },
-      custom: {
-        name: "Custom Case",
-        description: "User-defined scenario",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: 0,
-        isCustom: true
-      }
-    };
+    return savedState ? JSON.parse(savedState).stressTestScenarios : DEFAULT_SCENARIOS;
   });
 
-  // Add this new state
+  // Add state for active stress test
   const [activeStressTest, setActiveStressTest] = useState<string | null>(null);
 
   // Add state for showing inputs
@@ -581,99 +499,123 @@ const Index = () => {
     }
   }, [strategy]);
 
-  // Apply stress test scenario
+  // Function to apply a stress test scenario
   const applyStressTest = (key: string) => {
     setActiveStressTest(key);
     const scenario = stressTestScenarios[key];
     if (!scenario) return;
-    
-    // Calculate stressed spot price
+
+    // Calculate stressed spot price with validation
     const stressedSpotPrice = initialSpotPrice * (1 + Number(scenario.priceShock));
-    
-    // Update simulation parameters
+    if (isNaN(stressedSpotPrice) || stressedSpotPrice <= 0) {
+      console.error('Invalid stressed spot price:', stressedSpotPrice);
+      return;
+    }
+
+    // Update simulation parameters with validation
     setRealPriceParams(prev => ({
       ...prev,
-      useSimulation: !scenario.realBasis, // Disable simulation if using real basis
-      volatility: scenario.volatility,
+      useSimulation: !scenario.realBasis,
+      volatility: Math.max(0, scenario.volatility),
       drift: scenario.drift
     }));
 
     // Clear previous prices
-    if (scenario.forwardBasis !== undefined) {
-      setManualForwards({});
-    }
-    if (scenario.realBasis !== undefined) {
-      setRealPrices({});
-    }
+    setManualForwards({});
+    setRealPrices({});
+
+    // Create a function to get the correct date and key for each month
+    const getMonthData = (startDate: Date, monthsAhead: number) => {
+      const date = new Date(startDate);
+      const yearsToAdd = Math.floor(monthsAhead / 12);
+      const monthsToAdd = monthsAhead % 12;
+      date.setFullYear(date.getFullYear() + yearsToAdd);
+      const newMonth = date.getMonth() + monthsToAdd;
+      if (newMonth > 11) {
+        date.setFullYear(date.getFullYear() + 1);
+        date.setMonth(newMonth - 12);
+      } else {
+        date.setMonth(newMonth);
+      }
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      return { date, monthKey };
+    };
 
     const startDate = new Date(params.startDate);
-    let currentDate = new Date(startDate);
 
-    // Update forward curve if forwardBasis is specified (only for traditional contango/backwardation)
-    if (scenario.forwardBasis !== undefined && scenario.forwardBasis !== 0) {
+    // Calculate forward curve with basis
+    if (scenario.forwardBasis !== undefined) {
+      const newForwards = {};
       for (let i = 0; i < params.monthsToHedge; i++) {
-        currentDate.setMonth(currentDate.getMonth() + 1);
-        const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
+        const { monthKey } = getMonthData(startDate, i);
         const timeInYears = i / 12;
-        const forwardPrice = stressedSpotPrice * Math.exp(Number(scenario.forwardBasis) * timeInYears * 12);
-        
-        setManualForwards(prev => ({
-          ...prev,
-          [monthKey]: forwardPrice
-        }));
+        const forwardPrice = stressedSpotPrice * Math.exp(
+          (params.interestRate/100 + Number(scenario.forwardBasis)) * timeInYears
+        );
+        if (!isNaN(forwardPrice) && forwardPrice > 0) {
+          newForwards[monthKey] = forwardPrice;
+        }
       }
+      setManualForwards(newForwards);
     }
 
-    // Update real prices if realBasis is specified (for real price scenarios)
-    if (scenario.realBasis !== undefined && scenario.realBasis !== 0) {
-      currentDate = new Date(startDate);
-      
-      // First, calculate forward prices without any basis
+    // Calculate real prices with basis
+    if (scenario.realBasis !== undefined) {
+      const newRealPrices = {};
       const baseForwards = {};
       for (let i = 0; i < params.monthsToHedge; i++) {
-        currentDate.setMonth(currentDate.getMonth() + 1);
-        const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
+        const { monthKey } = getMonthData(startDate, i);
         const timeInYears = i / 12;
-        // Calculate forward price using risk-free rate only
-        const forwardPrice = stressedSpotPrice * Math.exp((params.interestRate/100) * timeInYears);
+        const forwardPrice = stressedSpotPrice * Math.exp(
+          (params.interestRate/100) * timeInYears
+        );
         baseForwards[monthKey] = forwardPrice;
       }
-
-      // Reset currentDate for real prices
-      currentDate = new Date(startDate);
       for (let i = 0; i < params.monthsToHedge; i++) {
-        currentDate.setMonth(currentDate.getMonth() + 1);
-        const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
+        const { monthKey } = getMonthData(startDate, i);
         const timeInYears = i / 12;
-        // Apply basis only to real prices
-        const realPrice = stressedSpotPrice * Math.exp(Number(scenario.realBasis) * timeInYears * 12);
-        
-        setRealPrices(prev => ({
-          ...prev,
-          [monthKey]: realPrice
-        }));
-
-        // Set forward price to base forward (without basis)
-        setManualForwards(prev => ({
-          ...prev,
-          [monthKey]: baseForwards[monthKey]
-        }));
+        const realPrice = stressedSpotPrice * Math.exp(
+          Number(scenario.realBasis) * timeInYears * 12
+        );
+        if (!isNaN(realPrice) && realPrice > 0) {
+          newRealPrices[monthKey] = realPrice;
+          setManualForwards(prev => ({
+            ...prev,
+            [monthKey]: baseForwards[monthKey]
+          }));
+        }
       }
+      setRealPrices(newRealPrices);
     }
 
-    // Recalculate results
-    calculateResults();
+    // Recalculate results with error handling
+    try {
+      calculateResults();
+    } catch (error) {
+      console.error('Error calculating results:', error);
+    }
   };
 
-  // Update stress test scenario
+  // Update stress test scenario with validation
   const updateScenario = (key: string, field: keyof StressTestScenario, value: number) => {
-    setStressTestScenarios(prev => ({
-      ...prev,
-      [key]: {
-        ...prev[key],
-        [field]: value
+    setStressTestScenarios(prev => {
+      const updatedScenarios = {
+        ...prev,
+        [key]: {
+          ...prev[key],
+          [field]: value
+        }
+      };
+
+      // Validate updated scenario
+      const scenario = updatedScenarios[key];
+      if (scenario.volatility < 0) scenario.volatility = 0;
+      if (Math.abs(scenario.priceShock) > 1) {
+        scenario.priceShock = Math.sign(scenario.priceShock);
       }
-    }));
+
+      return updatedScenarios;
+    });
   };
 
   // Type guard for results
@@ -1562,78 +1504,151 @@ const Index = () => {
                 {Object.entries(stressTestScenarios).map(([key, scenario]) => (
                   <Card
                     key={key}
-                    className="w-full text-left p-3 hover:bg-gray-50"
+                    className={`w-full text-left p-3 hover:bg-gray-50 ${
+                      activeStressTest === key ? 'border-2 border-blue-500' : ''
+                    }`}
                   >
                     <button
                       onClick={() => toggleInputs(key)}
                       className="w-full text-left p-3 hover:bg-gray-50"
                     >
-                      <span className="font-medium">{scenario.name}</span>
-                      <svg
-                        className={`w-4 h-4 transform transition-transform ${showInputs[key] ? 'rotate-180' : ''}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                      </svg>
+                      <div className="flex justify-between items-center">
+                        <span className="font-medium">{scenario.name}</span>
+                        <div className="flex items-center gap-2">
+                          {activeStressTest === key && (
+                            <span className="text-sm text-blue-500">Active</span>
+                          )}
+                          <svg
+                            className={`w-4 h-4 transform transition-transform ${
+                              showInputs[key] ? 'rotate-180' : ''
+                            }`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </div>
+                      </div>
                     </button>
                     {showInputs[key] && (
                       <div className="px-3 pb-3">
                         <p className="text-xs text-gray-600 mb-2">{scenario.description}</p>
                         <div className="space-y-2">
                           <div>
-                            <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                            <label className="block text-sm font-medium mb-1">
+                              Volatility (%)
+                              <span className="text-xs text-gray-500 ml-1">
+                                (0-100)
+                              </span>
+                            </label>
                             <Input
                               className="h-7"
                               type="number"
                               value={scenario.volatility * 100}
-                              onChange={(e) => updateScenario(key, 'volatility', Number(e.target.value) / 100)}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (!isNaN(value) && value >= 0) {
+                                  updateScenario(key, 'volatility', value / 100);
+                                }
+                              }}
+                              min="0"
+                              max="100"
                               step="0.1"
                             />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium mb-1">Drift (%)</label>
+                            <label className="block text-sm font-medium mb-1">
+                              Drift (%)
+                              <span className="text-xs text-gray-500 ml-1">
+                                (-50 to 50)
+                              </span>
+                            </label>
                             <Input
                               className="h-7"
                               type="number"
                               value={scenario.drift * 100}
-                              onChange={(e) => updateScenario(key, 'drift', Number(e.target.value) / 100)}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (!isNaN(value) && value >= -50 && value <= 50) {
+                                  updateScenario(key, 'drift', value / 100);
+                                }
+                              }}
+                              min="-50"
+                              max="50"
                               step="0.1"
                             />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium mb-1">Price Shock (%)</label>
+                            <label className="block text-sm font-medium mb-1">
+                              Price Shock (%)
+                              <span className="text-xs text-gray-500 ml-1">
+                                (-100 to 100)
+                              </span>
+                            </label>
                             <Input
                               className="h-7"
                               type="number"
                               value={scenario.priceShock * 100}
-                              onChange={(e) => updateScenario(key, 'priceShock', Number(e.target.value) / 100)}
+                              onChange={(e) => {
+                                const value = Number(e.target.value);
+                                if (!isNaN(value) && value >= -100 && value <= 100) {
+                                  updateScenario(key, 'priceShock', value / 100);
+                                }
+                              }}
+                              min="-100"
+                              max="100"
                               step="0.1"
                             />
                           </div>
                           {scenario.forwardBasis !== undefined && (
                             <div>
-                              <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
+                              <label className="block text-sm font-medium mb-1">
+                                Monthly Basis (%)
+                                <span className="text-xs text-gray-500 ml-1">
+                                  (-10 to 10)
+                                </span>
+                              </label>
                               <Input
                                 className="h-7"
                                 type="number"
                                 value={scenario.forwardBasis * 100}
-                                onChange={(e) => updateScenario(key, 'forwardBasis', Number(e.target.value) / 100)}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (!isNaN(value) && value >= -10 && value <= 10) {
+                                    updateScenario(key, 'forwardBasis', value / 100);
+                                  }
+                                }}
+                                min="-10"
+                                max="10"
                                 step="0.1"
                               />
                             </div>
                           )}
                         </div>
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            applyStressTest(key);
-                          }}
-                          className="w-full bg-[#0f172a] text-white hover:bg-[#1e293b] mt-4"
-                        >
-                          Run Scenario
-                        </Button>
+                        <div className="flex gap-2 mt-4">
+                          <Button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              applyStressTest(key);
+                            }}
+                            className="flex-1 bg-[#0f172a] text-white hover:bg-[#1e293b]"
+                          >
+                            Run Scenario
+                          </Button>
+                          {scenario.isEditable && (
+                            <Button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                resetScenario(key);
+                              }}
+                              variant="outline"
+                              className="flex-shrink-0"
+                            >
+                              Reset
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     )}
                   </Card>
