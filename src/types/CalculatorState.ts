@@ -20,4 +20,8 @@ export interface CalculatorState {
   activeTab: string;
   customScenario: any;
   stressTestScenarios: Record<string, any>;
-} 
+  useImpliedVol: boolean;
+  impliedVolatilities: Record<string, number | null>;
+}
+
+export type { CalculatorState }; 

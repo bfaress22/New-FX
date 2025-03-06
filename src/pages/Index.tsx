@@ -9,6 +9,9 @@ import { Link } from 'react-router-dom';
 import { CalculatorState } from '../types/CalculatorState';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface StressTestScenario {
   name: string;
@@ -79,7 +82,35 @@ interface HistoricalDataPoint {
 interface MonthlyStats {
   month: string;
   avgPrice: number;
-  volatility: number;
+  volatility: number | null;
+}
+
+interface PriceRange {
+  min: number;
+  max: number;
+  probability: number;
+}
+
+interface RiskMatrixResult {
+  strategy: StrategyComponent[];
+  coverageRatio: number;
+  costs: {[key: string]: number};
+  differences: {[key: string]: number};
+  hedgingCost: number;
+}
+
+// Ajouter cette interface pour les matrices de risque sauvegardées
+interface SavedRiskMatrix {
+  id: string;
+  name: string;
+  timestamp: number;
+  priceRanges: PriceRange[];
+  strategies: {
+    components: StrategyComponent[];
+    coverageRatio: number;
+    name: string;
+  }[];
+  results: RiskMatrixResult[];
 }
 
 const DEFAULT_SCENARIOS = {
@@ -207,10 +238,92 @@ const Index = () => {
   // Stress Test Scenarios
   const [stressTestScenarios, setStressTestScenarios] = useState<Record<string, StressTestScenario>>(() => {
     const savedState = localStorage.getItem('calculatorState');
-    return savedState ? JSON.parse(savedState).stressTestScenarios : DEFAULT_SCENARIOS;
+    return savedState ? JSON.parse(savedState).stressTestScenarios : {
+      base: {
+        name: "Base Case",
+        description: "Normal market conditions",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      highVol: {
+        name: "High Volatility",
+        description: "Double volatility scenario",
+        volatility: 0.4,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      crash: {
+        name: "Market Crash",
+        description: "High volatility, negative drift, price shock",
+        volatility: 0.5,
+        drift: -0.03,
+        priceShock: -0.2,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      bull: {
+        name: "Bull Market",
+        description: "Low volatility, positive drift, upward shock",
+        volatility: 0.15,
+        drift: 0.02,
+        priceShock: 0.1,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      contango: {
+        name: "Contango",
+        description: "Forward prices higher than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0.01,
+        isEditable: true
+      },
+      backwardation: {
+        name: "Backwardation",
+        description: "Forward prices lower than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: -0.01,
+        isEditable: true
+      },
+      contangoReal: {
+        name: "Contango (Real Prices)",
+        description: "Real prices higher than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        realBasis: 0.01,
+        isEditable: true
+      },
+      backwardationReal: {
+        name: "Backwardation (Real Prices)",
+        description: "Real prices lower than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        realBasis: -0.01,
+        isEditable: true
+      },
+      custom: {
+        name: "Custom Case",
+        description: "User-defined scenario",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isCustom: true
+      }
+    };
   });
 
-  // Add state for active stress test
+  // Add this new state
   const [activeStressTest, setActiveStressTest] = useState<string | null>(null);
 
   // Add state for showing inputs
@@ -228,16 +341,37 @@ const Index = () => {
   const [useImpliedVol, setUseImpliedVol] = useState(false);
   const [impliedVolatilities, setImpliedVolatilities] = useState<ImpliedVolatility>({});
 
-  // Historical data state
+  // Historical data and monthly stats
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [monthlyStats, setMonthlyStats] = useState<MonthlyStats[]>([]);
-
-  // Ajoutez ces états
   const [showHistoricalData, setShowHistoricalData] = useState(true);
   const [showMonthlyStats, setShowMonthlyStats] = useState(true);
 
+  const [priceRanges, setPriceRanges] = useState<PriceRange[]>([
+    { min: 30, max: 60, probability: 43 },
+    { min: 60, max: 80, probability: 27 },
+    { min: 80, max: 120, probability: 22 },
+    { min: 120, max: 200, probability: 5 }
+  ]);
+
+  const [matrixStrategies, setMatrixStrategies] = useState<{
+    components: StrategyComponent[];
+    coverageRatio: number;
+    name: string;
+  }[]>([]);
+
+  const [riskMatrixResults, setRiskMatrixResults] = useState<RiskMatrixResult[]>([]);
+
+  // Ajouter cet état
+  const [savedRiskMatrices, setSavedRiskMatrices] = useState<SavedRiskMatrix[]>(() => {
+    const saved = localStorage.getItem('savedRiskMatrices');
+    return saved ? JSON.parse(saved) : [];
+  });
+
   // Calculate Black-Scholes Option Price
   const calculateOptionPrice = (type, S, K, r, t, sigma, date?) => {
+    // Utiliser le nombre de mois spécifié par l'utilisateur
+    const timeInYears = params.monthsToHedge / 12; // Convertir les mois en années
     // Utilisez la volatilité implicite si disponible
     let effectiveSigma = sigma;
     if (date && useImpliedVol) {
@@ -284,21 +418,11 @@ const Index = () => {
     let currentPrice = params.spotPrice;
     const prices = {};
     
-    // Box-Muller transform for better normal distribution approximation
-    const generateNormal = () => {
-      let u = 0, v = 0;
-      while (u === 0) u = Math.random();
-      while (v === 0) v = Math.random();
-      return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-    };
-    
     months.forEach((date) => {
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       
-      // Generate random walk with better normal distribution
-      const randomWalk = generateNormal();
-      
-      // Apply geometric Brownian motion formula
+      // Generate random walk
+      const randomWalk = Math.random() * 2 - 1; // Simple normal approximation
       currentPrice = currentPrice * Math.exp(
         (realPriceParams.drift - Math.pow(realPriceParams.volatility, 2) / 2) * dt + 
         realPriceParams.volatility * Math.sqrt(dt) * randomWalk
@@ -388,128 +512,132 @@ const Index = () => {
   // Calculate detailed results
   const calculateResults = () => {
     const startDate = new Date(params.startDate);
-    const months = Array.from({ length: params.monthsToHedge }, (_, i) => {
-      const date = new Date(startDate);
-      date.setMonth(date.getMonth() + i + 1, 0);
-      return date;
-    });
+    const months = [];
+    let currentDate = new Date(startDate);
 
-    // Generate new price paths with Monte Carlo ONLY if simulation is enabled
-    // AND no stress test scenario is active
-    if (realPriceParams.useSimulation && !activeStressTest) {
-      // Generate new simulated prices
+    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
+
+    if (remainingDaysInMonth > 0) {
+      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    }
+
+    for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
+      currentDate.setMonth(currentDate.getMonth() + 1);
+      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    }
+
+    // If simulation is enabled, generate new real prices
+    if (realPriceParams.useSimulation) {
       const simulatedPrices = simulateRealPrices(months, startDate);
       setRealPrices(simulatedPrices);
     }
 
     const timeToMaturities = months.map(date => {
-      const diffTime = Math.abs(date.getTime() - startDate.getTime());
-      return diffTime / (365.25 * 24 * 60 * 60 * 1000);
+        const diffTime = Math.abs(date.getTime() - startDate.getTime());
+      return diffTime / (325.25 * 24 * 60 * 60 * 1000);
     });
 
     const monthlyVolume = params.totalVolume / params.monthsToHedge;
 
     const detailedResults = months.map((date, i) => {
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      
-      // Find the corresponding monthly statistics
-      const monthStats = monthlyStats.find(stat => stat.month === monthKey);
-      
-      // Calculate forward price
-      const forward = manualForwards[monthKey] || 
-        params.spotPrice * Math.exp(params.interestRate / 100 * timeToMaturities[i]);
+      // Get forward price
+      const forward = (() => {
+        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+        const timeDiff = date.getTime() - startDate.getTime();
+        return manualForwards[monthKey] || 
+          initialSpotPrice * Math.exp(params.interestRate/100 * timeDiff/(1000 * 60 * 60 * 24 * 365));
+      })();
 
-      // Use real price from simulation or manual input
-      const realPrice = activeStressTest && scenario.realBasis === undefined ? 
-        realPrices[monthKey] || (monthStats?.avgPrice || forward) : 
-        realPrices[monthKey] || forward;
-      const impliedVolatility = monthStats ? monthStats.volatility * 100 : null;
+      // Get real price and store monthKey for reuse
+      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+      const realPrice = realPrices[monthKey] || forward;
 
-      // Calculate swap price once for all swaps
-      const swapPrice = calculateSwapPrice(
-        months.map((_, idx) => {
-          const monthKey = `${_.getFullYear()}-${_.getMonth() + 1}`;
-          return manualForwards[monthKey] || 
-            initialSpotPrice * Math.exp(params.interestRate / 100 * timeToMaturities[idx]);
-        }),
-        timeToMaturities,
-        params.interestRate / 100
-      );
+      const t = timeToMaturities[i];
 
-      // Separate swaps from options
-      const swaps = strategy.filter(s => s.type === 'swap');
-      const options = strategy.filter(s => s.type !== 'swap');
+      // Calculer le prix du swap une fois pour tous les swaps
+        const swapPrice = calculateSwapPrice(
+            months.map((_, idx) => {
+                const monthKey = `${_.getFullYear()}-${_.getMonth() + 1}`;
+                return manualForwards[monthKey] || 
+            initialSpotPrice * Math.exp(params.interestRate/100 * timeToMaturities[idx]);
+            }),
+            timeToMaturities,
+        params.interestRate/100
+        );
 
-      // Calculate option prices as before
-      const optionPrices = options.map((option, optIndex) => {
-        const strike = option.strikeType === 'percent' ? 
-          params.spotPrice * (option.strike / 100) : 
-          option.strike;
-        
+      // Séparer les swaps des options
+        const swaps = strategy.filter(s => s.type === 'swap');
+        const options = strategy.filter(s => s.type !== 'swap');
+
+      // Calculer les prix des options comme avant
+        const optionPrices = options.map((option, optIndex) => {
+            const strike = option.strikeType === 'percent' ? 
+          params.spotPrice * (option.strike/100) : 
+                option.strike;
+            
+            return {
+                type: option.type,
+                price: calculateOptionPrice(
+                    option.type,
+                    forward,
+                    strike,
+            params.interestRate/100,
+            t,
+            option.volatility/100,
+                    date
+                ),
+          quantity: option.quantity/100,
+                strike: strike,
+                label: `${option.type === 'call' ? 'Call' : 'Put'} Price ${optIndex + 1}`
+            };
+        });
+
+        // Calculate strategy price
+        const strategyPrice = optionPrices.reduce((total, opt) => 
+            total + (opt.price * opt.quantity), 0);
+
+        // Calculate payoff using real price
+        const totalPayoff = optionPrices.reduce((sum, opt) => {
+            const payoff = opt.type === 'call' 
+                ? Math.max(realPrice - opt.strike, 0)
+                : Math.max(opt.strike - realPrice, 0);
+            return sum + (payoff * opt.quantity);
+        }, 0);
+
+      // Ensuite, utiliser ces variables dans le calcul du hedgedCost
+        const totalSwapPercentage = swaps.reduce((sum, swap) => sum + swap.quantity, 0) / 100;
+        const hedgedPrice = totalSwapPercentage * swapPrice + (1 - totalSwapPercentage) * realPrice;
+
+        const hedgedCost = -(monthlyVolume * hedgedPrice) - 
+            (monthlyVolume * (1 - totalSwapPercentage) * strategyPrice) + 
+            (monthlyVolume * (1 - totalSwapPercentage) * totalPayoff);
+
         return {
-          type: option.type,
-          price: calculateOptionPrice(
-            option.type,
+            date: `${monthNames[date.getMonth()]} ${date.getFullYear()}`,
+        timeToMaturity: t,
             forward,
-            strike,
-            params.interestRate / 100,
-            timeToMaturities[i],
-            option.volatility / 100,
-            date
-          ),
-          quantity: option.quantity / 100,
-          strike: strike,
-          label: `${option.type === 'call' ? 'Call' : 'Put'} Price ${optIndex + 1}`
+            realPrice,
+            optionPrices: [
+                ...optionPrices,
+                ...swaps.map(swap => ({
+                    type: 'swap',
+                    price: swapPrice,
+            quantity: swap.quantity/100,
+                    strike: swap.strike,
+                    label: 'Swap Price'
+                }))
+            ],
+            strategyPrice,
+            totalPayoff,
+            monthlyVolume,
+            hedgedCost,
+            unhedgedCost: -(monthlyVolume * realPrice),
+            deltaPnL: hedgedCost - (-(monthlyVolume * realPrice))
         };
-      });
-
-      // Calculate strategy price
-      const strategyPrice = optionPrices.reduce((total, opt) => 
-        total + (opt.price * opt.quantity), 0);
-
-      // Calculate payoff using real price
-      const totalPayoff = optionPrices.reduce((sum, opt) => {
-        const payoff = opt.type === 'call' 
-          ? Math.max(realPrice - opt.strike, 0)
-          : Math.max(opt.strike - realPrice, 0);
-        return sum + (payoff * opt.quantity);
-      }, 0);
-
-      // Then, use these variables in the calculation of hedgedCost
-      const totalSwapPercentage = swaps.reduce((sum, swap) => sum + swap.quantity, 0) / 100;
-      const hedgedPrice = totalSwapPercentage * swapPrice + (1 - totalSwapPercentage) * realPrice;
-
-      const hedgedCost = -(monthlyVolume * hedgedPrice) - 
-        (monthlyVolume * (1 - totalSwapPercentage) * strategyPrice) + 
-        (monthlyVolume * (1 - totalSwapPercentage) * totalPayoff);
-
-      return {
-        date: `${monthNames[date.getMonth()]} ${date.getFullYear()}`,
-        timeToMaturity: timeToMaturities[i],
-        forward,
-        realPrice,
-        impliedVolatility,
-        optionPrices: [
-          ...optionPrices,
-          ...swaps.map(swap => ({
-            type: 'swap',
-            price: swapPrice,
-            quantity: swap.quantity / 100,
-            strike: swap.strike,
-            label: 'Swap Price'
-          }))
-        ],
-        strategyPrice,
-        totalPayoff,
-        monthlyVolume,
-        hedgedCost,
-        unhedgedCost: -(monthlyVolume * realPrice),
-        deltaPnL: hedgedCost - (-(monthlyVolume * realPrice))
-      };
     });
 
     setResults(detailedResults);
-    setUseImpliedVol(monthlyStats.length > 0);
     calculatePayoff();
   };
 
@@ -519,187 +647,79 @@ const Index = () => {
     }
   }, [strategy]);
 
-  // Function to apply a stress test scenario
-  const applyStressTest = (key: string) => {
+  // Apply stress test scenario
+  const applyStressTest = (key) => {
     setActiveStressTest(key);
     const scenario = stressTestScenarios[key];
-    if (!scenario) return;
     
-    // Calculate initial stressed spot price
-    const stressedSpotPrice = initialSpotPrice;
-    if (isNaN(stressedSpotPrice) || stressedSpotPrice <= 0) {
-      console.error('Invalid stressed spot price:', stressedSpotPrice);
-      return;
-    }
-
-    // Update simulation parameters
-    setRealPriceParams(prev => ({
-      ...prev,
-      useSimulation: false,  // Disable simulation when applying stress test
-      volatility: Math.max(0, scenario.volatility),
+    // Appliquer le choc de prix au prix spot
+    const adjustedPrice = params.spotPrice * (1 + scenario.priceShock);
+    
+    // Mettre à jour les paramètres de prix réels
+    setRealPriceParams({
+      useSimulation: !scenario.realBasis, // Désactiver la simulation si on utilise realBasis
+      volatility: scenario.volatility,
       drift: scenario.drift
-    }));
-
-    // Create a function to get the correct date and key for each month
-    const getMonthData = (startDate: Date, monthsAhead: number) => {
-      const date = new Date(startDate);
-      const yearsToAdd = Math.floor(monthsAhead / 12);
-      const monthsToAdd = monthsAhead % 12;
-      date.setFullYear(date.getFullYear() + yearsToAdd);
-      const newMonth = date.getMonth() + monthsToAdd;
-      if (newMonth > 11) {
-        date.setFullYear(date.getFullYear() + 1);
-        date.setMonth(newMonth - 12);
-      } else {
-        date.setMonth(newMonth);
-      }
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      return { date, monthKey };
-    };
-
-    const startDate = new Date(params.startDate);
-
-    // Store current real prices before updating
-    const prevRealPrices = {...realPrices};
+    });
     
-    // Clear forwards but KEEP real prices
-    setManualForwards({});
-
-    // Handle scenarios with monthly price shocks
-    if (scenario.priceShock !== 0 && scenario.priceShock !== undefined) {
+    // Calculer les forward prices et real prices selon le type de scénario
       const newForwards = {};
+    const newRealPrices = {};
       
-      // Determine the multiplier based on scenario type
-      let rateMultiplier;
+    const months = [];
+    const startDate = new Date(params.startDate);
       
-      if (key === 'contango') {
-        rateMultiplier = 1 + scenario.priceShock; // Increase prices
-      } else if (key === 'backwardation') {
-        rateMultiplier = 1 - scenario.priceShock; // Decrease prices
-      } else if (key === 'crash') {
-        // Market crash: price shock and decrease each month
-        rateMultiplier = 1 - Math.abs(scenario.priceShock) / params.monthsToHedge;
-      } else if (key === 'bull') {
-        // Bull market: price shock and increase each month
-        rateMultiplier = 1 + scenario.priceShock / params.monthsToHedge;
+      for (let i = 0; i < params.monthsToHedge; i++) {
+      const date = new Date(startDate);
+      date.setMonth(date.getMonth() + i);
+      months.push(date);
+      
+      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+        const timeInYears = i / 12;
+      
+      // Calcul du forward price standard basé sur le taux d'intérêt
+      const baseForward = params.spotPrice * Math.exp((params.interestRate/100) * timeInYears);
+      
+      // Pour Contango et Backwardation standard, appliquer la base mensuelle aux forwards
+      if (scenario.forwardBasis !== undefined) {
+        // Pour Contango: augmentation mensuelle (ex: 1.05^mois)
+        // Pour Backwardation: diminution mensuelle (ex: 0.95^mois)
+        newForwards[monthKey] = baseForward * Math.pow(1 + scenario.forwardBasis, i);
       } else {
-        // For other scenarios, apply price shock only to initial price
-        rateMultiplier = 1;
+        // Si pas de base spécifiée, utiliser le forward standard
+        newForwards[monthKey] = baseForward;
       }
       
-      // Start with the spot price
-      let currentPrice = stressedSpotPrice;
-      
-      // For first month, apply the full shock for crash or bull scenarios
-      if (key === 'crash') {
-        currentPrice = stressedSpotPrice * (1 - Math.abs(scenario.priceShock) / 2);
-      } else if (key === 'bull') {
-        currentPrice = stressedSpotPrice * (1 + scenario.priceShock / 2);
-      }
-      
-      // Calculate forward prices with monthly changes
-      for (let i = 0; i < params.monthsToHedge; i++) {
-        const { monthKey } = getMonthData(startDate, i);
-        
-        // Apply interest rate
-        const timeInYears = i / 12;
-        const interestFactor = Math.exp((params.interestRate/100) * timeInYears);
-        
-        // Apply monthly change for scenarios other than base case
-        if (key !== 'base' && key !== 'highVol' && i > 0) {
-          currentPrice = currentPrice * rateMultiplier;
-        }
-        
-        // Apply interest rate to current price
-        const forwardPrice = currentPrice * interestFactor;
-        
-        if (!isNaN(forwardPrice) && forwardPrice > 0) {
-          newForwards[monthKey] = forwardPrice;
-        }
-      }
-      setManualForwards(newForwards);
-    }
-    // Regular handling for other scenarios with forwardBasis
-    else if (scenario.forwardBasis !== undefined) {
-      const newForwards = {};
-      for (let i = 0; i < params.monthsToHedge; i++) {
-        const { monthKey } = getMonthData(startDate, i);
-        const timeInYears = i / 12;
-        
-        // Use continuous compounding with interest rate + forward basis
-        const forwardPrice = stressedSpotPrice * Math.exp(
-          (params.interestRate/100 + Number(scenario.forwardBasis)) * timeInYears
-        );
-        
-        if (!isNaN(forwardPrice) && forwardPrice > 0) {
-          newForwards[monthKey] = forwardPrice;
-        }
-      }
-      setManualForwards(newForwards);
-    }
-
-    // ONLY update real prices if this is a scenario that directly affects real prices
+      // Pour tous les scénarios, appliquer le choc de prix aux prix réels
     if (scenario.realBasis !== undefined) {
-      const newRealPrices = {};
-      const baseForwards = {};
-      
-      // First calculate base forwards using just the interest rate
-      for (let i = 0; i < params.monthsToHedge; i++) {
-        const { monthKey } = getMonthData(startDate, i);
-        const timeInYears = i / 12;
-        
-        const forwardPrice = stressedSpotPrice * Math.exp(
-          (params.interestRate/100) * timeInYears
-        );
-        baseForwards[monthKey] = forwardPrice;
+        // Pour Contango (Real Prices) et Backwardation (Real Prices)
+        newRealPrices[monthKey] = adjustedPrice * Math.pow(1 + scenario.realBasis, i);
+      } else {
+        // Pour les autres scénarios, appliquer uniquement le choc de prix
+        newRealPrices[monthKey] = adjustedPrice;
       }
-
-      // Then calculate real prices with real basis
-      for (let i = 0; i < params.monthsToHedge; i++) {
-        const { monthKey } = getMonthData(startDate, i);
-        const timeInYears = i / 12;
-        
-        const realPrice = stressedSpotPrice * Math.exp(
-          Number(scenario.realBasis) * timeInYears * 12
-        );
-        
-        if (!isNaN(realPrice) && realPrice > 0) {
-          newRealPrices[monthKey] = realPrice;
-          setManualForwards(prev => ({
-            ...prev,
-            [monthKey]: baseForwards[monthKey]
-          }));
-        }
-      }
-      setRealPrices(newRealPrices); // ONLY replace real prices for realBasis scenarios
     }
-
-    // Ensure calculateResults runs with the updated parameters
-    setTimeout(() => {
+    
+    if (Object.keys(newForwards).length > 0) {
+      setManualForwards(newForwards);
+    }
+    
+    if (Object.keys(newRealPrices).length > 0) {
+      setRealPrices(newRealPrices);
+    }
+    
       calculateResults();
-    }, 50);
   };
 
-  // Update stress test scenario with validation
+  // Update stress test scenario
   const updateScenario = (key: string, field: keyof StressTestScenario, value: number) => {
-    setStressTestScenarios(prev => {
-      const updatedScenarios = {
+    setStressTestScenarios(prev => ({
       ...prev,
       [key]: {
         ...prev[key],
         [field]: value
       }
-      };
-
-      // Validate updated scenario
-      const scenario = updatedScenarios[key];
-      if (scenario.volatility < 0) scenario.volatility = 0;
-      if (Math.abs(scenario.priceShock) > 1) {
-        scenario.priceShock = Math.sign(scenario.priceShock);
-      }
-
-      return updatedScenarios;
-    });
+    }));
   };
 
   // Type guard for results
@@ -1084,167 +1104,6 @@ const Index = () => {
     return weightedSum / forwards.length;
   };
 
-  // Ajoutez cette fonction d'aide pour nettoyer les lignes CSV
-  const cleanCSVLine = (line: string) => {
-    return line
-      .replace(/\r/g, '') // Enlever les retours chariot
-      .replace(/^"|"$/g, '') // Enlever les guillemets au début et à la fin
-      .split('","'); // Séparer sur les "," avec guillemets
-  };
-
-  // Modifiez la fonction handleFileUpload
-  const handleFileUpload = async () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.csv,.txt';
-    
-    input.onchange = async (e) => {
-        const file = (e.target as HTMLInputElement).files?.[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const text = event.target?.result as string;
-            const rows = text.split('\n').filter(row => row.trim());
-            
-            const data: HistoricalDataPoint[] = rows
-                .slice(1) // Ignore the header row
-                .map(row => {
-                    try {
-                        const columns = cleanCSVLine(row);
-                        if (columns.length < 2) {
-                            console.error('Invalid row format:', row);
-                            return null; // Ignore invalid rows
-                        }
-                        
-                        // Parse date from first column (DD/MM/YYYY format)
-                        const dateStr = columns[0];
-                        const [day, month, year] = dateStr.split('/');
-                        const date = new Date(`${year}-${month}-${day}`);
-                        
-                        // Validate date
-                        if (isNaN(date.getTime())) {
-                            console.error('Invalid date:', dateStr);
-                            return null; // Ignore invalid dates
-                        }
-
-                        // Parse price from the "Dernier" column (second column)
-                        const priceStr = columns[1].replace('.', '').replace(',', '.'); // Convert to a valid number format
-                        const price = Number(priceStr);
-
-                        if (isNaN(price)) {
-                            console.error('Invalid price:', priceStr);
-                            return null; // Ignore invalid prices
-                        }
-
-                        return {
-                            date: date.toISOString().split('T')[0],
-                            price: price
-                        };
-                    } catch (error) {
-                        console.error('Error parsing row:', row, error);
-                        return null;
-                    }
-                })
-                .filter(row => row !== null) as HistoricalDataPoint[];
-
-            if (data.length > 0) {
-                console.log('Imported data:', data);
-                setHistoricalData(data.sort((a, b) => b.date.localeCompare(a.date))); // Sort by date descending
-                calculateMonthlyStats(data);
-            } else {
-                alert('No valid data found in CSV file. Please check the format.');
-            }
-        };
-        reader.readAsText(file);
-    };
-
-    input.click();
-  };
-
-  // Fonction pour mettre à jour les données historiques manuellement
-  const updateHistoricalData = (index: number, field: 'date' | 'price', value: string | number) => {
-    const newData = [...historicalData];
-    newData[index] = {
-      ...newData[index],
-      [field]: value
-    };
-    setHistoricalData(newData.sort((a, b) => a.date.localeCompare(b.date)));
-    calculateMonthlyStats(newData);
-  };
-
-  // Fonction pour calculer les statistiques mensuelles
-  const calculateMonthlyStats = (data: HistoricalDataPoint[]) => {
-    const monthlyData: { [key: string]: number[] } = {};
-    
-    // Grouper les prix par mois
-    data.forEach(point => {
-        const date = new Date(point.date);
-        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-        if (!monthlyData[monthKey]) {
-            monthlyData[monthKey] = [];
-        }
-        monthlyData[monthKey].push(point.price);
-    });
-
-    // Calculer les statistiques pour chaque mois
-    const stats = Object.entries(monthlyData).map(([month, prices]) => {
-        const avgPrice = prices.reduce((sum, price) => sum + price, 0) / prices.length;
-        
-        // Calculer la volatilité historique
-        const returns = prices.slice(1).map((price, i) => 
-            Math.log(price / prices[i])
-        );
-        
-        let volatility = null;
-        if (returns.length > 0) {
-            const avgReturn = returns.reduce((sum, ret) => sum + ret, 0) / returns.length;
-            const variance = returns.reduce((sum, ret) => 
-                sum + Math.pow(ret - avgReturn, 2), 0
-            ) / (returns.length - 1);
-            volatility = Math.sqrt(variance * 252);
-        }
-
-        return { month, avgPrice, volatility };
-    });
-
-    // Trier par date croissante
-    setMonthlyStats(stats.sort((a, b) => a.month.localeCompare(b.month)));
-
-    // Mettre à jour les prix réels et les volatilités pour la période sélectionnée
-    const startDate = new Date(params.startDate);
-    const endDate = new Date(startDate);
-    endDate.setMonth(startDate.getMonth() + params.monthsToHedge);
-
-    const newRealPrices = {};
-    const newImpliedVols = {};
-    
-    stats.forEach(stat => {
-        if (stat.avgPrice !== null) {
-            newRealPrices[stat.month] = stat.avgPrice;
-        }
-        if (stat.volatility !== null) {
-            newImpliedVols[stat.month] = stat.volatility * 100;
-        }
-    });
-
-    setRealPrices(newRealPrices);
-    setImpliedVolatilities(newImpliedVols);
-    setUseImpliedVol(true);
-    calculateResults();
-  };
-
-  // Ajouter un bouton pour ajouter une nouvelle ligne
-  const addHistoricalDataRow = () => {
-    setHistoricalData([
-      ...historicalData,
-      {
-        date: new Date().toISOString().split('T')[0],
-        price: 0
-      }
-    ]);
-  };
-
   // Fonction pour ajouter un swap
   const addSwap = () => {
     // Calculer le prix du swap si on a des résultats
@@ -1264,31 +1123,525 @@ const Index = () => {
     }]);
   };
 
-  // Ajouter cette fonction pour effacer les données
-  const clearHistoricalData = () => {
-    setHistoricalData([]);
-    setMonthlyStats([]);
-    setRealPrices({});
-    setImpliedVolatilities({});
-    setUseImpliedVol(false);
+  // Mettre à jour l'interface MonthlyStats pour supporter les volatilités nulles
+  interface MonthlyStats {
+    month: string;
+    avgPrice: number;
+    volatility: number | null;
+  }
+
+  // Mettre à jour la fonction de nettoyage CSV
+  const cleanCSVLine = (line: string) => {
+    return line
+      .replace(/\r/g, '')
+      .replace(/^"|"$/g, '')
+      .split(/[,;\t]/); // Accepte plusieurs délimiteurs
+  };
+
+  // Mettre à jour la fonction d'import
+  const importHistoricalData = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const text = event.target?.result as string;
+            const rows = text.split('\n').filter(row => row.trim());
+            
+            const data: HistoricalDataPoint[] = rows
+                .map(row => {
+                    try {
+            // Nettoyer la ligne des guillemets et diviser par virgule
+            const columns = row.replace(/"/g, '').split(',');
+            
+            if (columns.length < 2) return null;
+            
+            // Parse la date (format DD/MM/YYYY)
+            const [day, month, year] = columns[0].split('/');
+                        const date = new Date(`${year}-${month}-${day}`);
+                        
+                        if (isNaN(date.getTime())) {
+              console.error('Invalid date:', columns[0]);
+              return null;
+            }
+
+            // Parse le prix (deuxième colonne)
+            // Nettoyer le prix des espaces et points de mille
+            const priceStr = columns[1]
+              .replace(/\s/g, '')        // Enlever les espaces
+              .replace(/\./g, '')        // Enlever les points de mille
+              .replace(',', '.');        // Remplacer la virgule décimale par un point
+            
+                        const price = Number(priceStr);
+
+                        if (isNaN(price)) {
+              console.error('Invalid price:', columns[1]);
+              return null;
+                        }
+
+                        return {
+                            date: date.toISOString().split('T')[0],
+                            price: price
+                        };
+                    } catch (error) {
+                        console.error('Error parsing row:', row, error);
+                        return null;
+                    }
+                })
+                .filter(row => row !== null) as HistoricalDataPoint[];
+
+            if (data.length > 0) {
+        // Trier par date décroissante (plus récent en premier)
+        const sortedData = data.sort((a, b) => b.date.localeCompare(a.date));
+        setHistoricalData(sortedData);
+        calculateMonthlyStats(sortedData);
+            } else {
+                alert('No valid data found in CSV file. Please check the format.');
+            }
+        };
+        reader.readAsText(file);
+    };
+
+  // Ajouter cette fonction pour mettre à jour les prix réels et les IV après le calcul des stats mensuelles
+  const updateBacktestValues = (stats: MonthlyStats[]) => {
+    const newRealPrices: { [key: string]: number } = {};
+    const newImpliedVols: { [key: string]: number } = {};
+
+    // Convertir les statistiques mensuelles en mappings par mois
+    stats.forEach(stat => {
+      const [year, month] = stat.month.split('-');
+      const monthKey = `${year}-${Number(month)}`; // Format: "YYYY-M"
+      
+      // Utiliser la moyenne comme prix réel
+      newRealPrices[monthKey] = stat.avgPrice;
+      
+      // Utiliser la volatilité historique comme IV (si disponible)
+      if (stat.volatility !== null) {
+        newImpliedVols[monthKey] = stat.volatility * 100; // Convertir en pourcentage
+      }
+    });
+
+    // Mettre à jour les états
+    setRealPrices(newRealPrices);
+    setImpliedVolatilities(newImpliedVols);
+    setUseImpliedVol(true); // Activer l'utilisation des IV
+    
+    // Recalculer les résultats avec les nouvelles valeurs
     calculateResults();
   };
 
-  // Add a function to clear the active stress test
-  const clearStressTest = () => {
-    setActiveStressTest(null);
+  // Mettre à jour le calcul des statistiques mensuelles
+  const calculateMonthlyStats = (data: HistoricalDataPoint[]) => {
+    const monthlyData: { [key: string]: number[] } = {};
     
-    // Restore Monte Carlo simulation if it was previously enabled
-    setRealPriceParams(prev => ({
-      ...prev,
-      useSimulation: true // Enable simulation when clearing the scenario
-    }));
+    // Grouper les prix par mois
+    data.forEach(point => {
+        const date = new Date(point.date);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        if (!monthlyData[monthKey]) {
+            monthlyData[monthKey] = [];
+        }
+        monthlyData[monthKey].push(point.price);
+    });
+
+    // Calculer les statistiques pour chaque mois
+    const stats = Object.entries(monthlyData).map(([month, prices]) => {
+      // Moyenne simple : somme des prix divisée par le nombre de prix
+        const avgPrice = prices.reduce((sum, price) => sum + price, 0) / prices.length;
+        
+        const returns = prices.slice(1).map((price, i) => 
+            Math.log(price / prices[i])
+        );
+        
+        let volatility = null;
+        if (returns.length > 0) {
+            const avgReturn = returns.reduce((sum, ret) => sum + ret, 0) / returns.length;
+            const variance = returns.reduce((sum, ret) => 
+                sum + Math.pow(ret - avgReturn, 2), 0
+            ) / (returns.length - 1);
+            volatility = Math.sqrt(variance * 252);
+        }
+
+        return { month, avgPrice, volatility };
+    });
+
+    setMonthlyStats(stats.sort((a, b) => b.month.localeCompare(a.month)));
     
-    // Clear forwards to allow recalculation with base parameters
-    setManualForwards({});
+    // Ajouter cet appel
+    updateBacktestValues(stats);
+  };
+
+  // Mettre à jour l'affichage des tableaux
+  {showHistoricalData && (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            <th className="border p-2 bg-gray-50">Date</th>
+            <th className="border p-2 bg-gray-50">Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          {historicalData.map((point, index) => (
+            <tr key={index}>
+              <td className="border p-2">{point.date}</td>
+              <td className="border p-2">{point.price.toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+
+  {showMonthlyStats && monthlyStats.length > 0 && (
+    <div className="mt-8">
+      <h3 className="text-lg font-semibold mb-4">Monthly Statistics</h3>
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            <th className="border p-2 bg-gray-50">Month</th>
+            <th className="border p-2 bg-gray-50">Average Price</th>
+            <th className="border p-2 bg-gray-50">Historical Volatility</th>
+          </tr>
+        </thead>
+        <tbody>
+          {monthlyStats.map((stat, index) => (
+            <tr key={index}>
+              <td className="border p-2">{stat.month}</td>
+              <td className="border p-2">{stat.avgPrice.toFixed(2)}</td>
+              <td className="border p-2">
+                {stat.volatility ? `${(stat.volatility * 100).toFixed(2)}%` : 'N/A'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+
+  // Add this function
+  const addHistoricalDataRow = () => {
+    const today = new Date().toISOString().split('T')[0];
+    setHistoricalData([...historicalData, { date: today, price: 0 }]);
+  };
+
+  // Add this function too since it's used in the UI
+  const clearHistoricalData = () => {
+    setHistoricalData([]);
+    setMonthlyStats([]);
+  };
+
+  // Ajouter cette fonction pour générer la matrice de risque
+  const generateRiskMatrix = () => {
+    const results: RiskMatrixResult[] = [];
     
-    // Calculate results with simulation enabled
-    calculateResults();
+    // Pour chaque stratégie configurée
+    matrixStrategies.forEach(strategyConfig => {
+      const costs: {[key: string]: number} = {};
+      const differences: {[key: string]: number} = {};
+      let totalHedgingCost = 0;
+      
+      // Calculer le coût de couverture (prix moyen de la stratégie * ratio * volume)
+      const strategyPrice = calculateStrategyPrice(strategyConfig.components);
+      totalHedgingCost = strategyPrice * strategyConfig.coverageRatio / 100 * params.totalVolume;
+      
+      // Pour chaque plage de prix
+      priceRanges.forEach(range => {
+        // Prendre le prix moyen de la plage
+        const avgPrice = (range.min + range.max) / 2;
+        
+        // Calculer le coût sans couverture pour ce prix
+        const unhedgedCost = params.totalVolume * avgPrice;
+        
+        // Calculer le payoff de la stratégie à ce prix
+        const strategyPayoff = calculateStrategyPayoffAtPrice(strategyConfig.components, avgPrice);
+        
+        // Calculer le coût total avec couverture
+        const hedgedVolume = params.totalVolume * (1 - strategyConfig.coverageRatio / 100);
+        const hedgedCost = hedgedVolume * avgPrice + totalHedgingCost - 
+                         (strategyPayoff * strategyConfig.coverageRatio / 100 * params.totalVolume);
+        
+        // Calculer la différence
+        const difference = unhedgedCost - hedgedCost;
+        
+        // Stocker les résultats
+        const rangeKey = `${range.min},${range.max}`;
+        costs[rangeKey] = hedgedCost;
+        differences[rangeKey] = difference;
+      });
+      
+      results.push({
+        strategy: strategyConfig.components,
+        coverageRatio: strategyConfig.coverageRatio,
+        costs,
+        differences,
+        hedgingCost: totalHedgingCost
+      });
+    });
+    
+    setRiskMatrixResults(results);
+  };
+
+  // Ajouter cette fonction pour ajouter une stratégie à la matrice
+  const addMatrixStrategy = () => {
+    if (strategy.length === 0) return;
+    
+    // Créer un nom basé sur les composants
+    const strategyName = strategy.map(comp => {
+      if (comp.type === 'swap') return 'Swap';
+      return `${comp.type === 'call' ? 'Call' : 'Put'} Option`;
+    }).join('/');
+    
+    setMatrixStrategies([
+      ...matrixStrategies,
+      {
+        components: [...strategy],
+        coverageRatio: 25, // Par défaut 25%
+        name: strategyName
+      }
+    ]);
+  };
+
+  // Ajouter cette fonction pour calculer le prix de la stratégie
+  const calculateStrategyPrice = (components: StrategyComponent[]) => {
+    let totalPrice = 0;
+    
+    components.forEach(comp => {
+      const strike = comp.strikeType === 'percent' 
+        ? params.spotPrice * (comp.strike / 100) 
+        : comp.strike;
+      
+      if (comp.type === 'swap') {
+        totalPrice += 0; // Un swap n'a pas de prime
+      } else {
+        const optionPrice = calculateOptionPrice(
+          comp.type, 
+          params.spotPrice, 
+          strike, 
+          params.interestRate/100, 
+          1, // 1 an comme approximation
+          comp.volatility/100
+        );
+        totalPrice += optionPrice * comp.quantity;
+      }
+    });
+    
+    return totalPrice;
+  };
+
+  // Ajouter cette fonction pour calculer le payoff à un prix donné
+  const calculateStrategyPayoffAtPrice = (components: StrategyComponent[], price: number) => {
+    let totalPayoff = 0;
+    
+    components.forEach(comp => {
+      const strike = comp.strikeType === 'percent' 
+        ? params.spotPrice * (comp.strike / 100) 
+        : comp.strike;
+      
+      if (comp.type === 'swap') {
+        // Correction du payoff de swap
+        totalPayoff += (price - strike) * comp.quantity;
+      } else if (comp.type === 'call') {
+        totalPayoff += Math.max(0, price - strike) * comp.quantity;
+      } else { // put
+        totalPayoff += Math.max(0, strike - price) * comp.quantity;
+      }
+    });
+    
+    return totalPayoff;
+  };
+
+  // Ajouter cette fonction pour supprimer une stratégie
+  const removeMatrixStrategy = (index: number) => {
+    setMatrixStrategies(matrixStrategies.filter((_, i) => i !== index));
+  };
+
+  // Mettre à jour la fonction handleCoverageRatioChange
+  const handleCoverageRatioChange = (index: number, value: number) => {
+    const updated = [...matrixStrategies];
+    updated[index].coverageRatio = value;
+    setMatrixStrategies(updated);
+  };
+
+  // Ajouter cette fonction pour manipuler les plages de prix
+  const updatePriceRange = (index: number, field: keyof PriceRange, value: number) => {
+    const updated = [...priceRanges];
+    updated[index][field] = value;
+    setPriceRanges(updated);
+  };
+
+  // Ajouter cette fonction pour déterminer la couleur des cellules
+  const getCellColor = (value: number) => {
+    if (value > 0) {
+      const intensity = Math.min(value / 100, 1); // Scale appropriately
+      return `rgba(0, 128, 0, ${intensity * 0.3})`; // Green
+    } else {
+      const intensity = Math.min(Math.abs(value) / 100, 1);
+      return `rgba(255, 0, 0, ${intensity * 0.3})`; // Red
+    }
+  };
+
+  // Ajouter cette fonction pour générer l'analyse complète
+  const generateFullRiskAnalysis = () => {
+    // Vérifier qu'il y a au moins une stratégie
+    if (matrixStrategies.length === 0 && strategy.length > 0) {
+      // Ajouter la stratégie actuelle si aucune n'est dans la liste
+      addMatrixStrategy();
+    }
+    
+    if (matrixStrategies.length === 0) {
+      alert("Please add at least one strategy for analysis");
+      return;
+    }
+    
+    // Créer une nouvelle liste de stratégies avec les ratios standards
+    const fullStrategyList = [];
+    
+    // Ajouter "All Spot" avec 0% de couverture
+    fullStrategyList.push({
+      components: [],
+      coverageRatio: 0,
+      name: "All Spot"
+    });
+    
+    // Pour chaque stratégie, ajouter les versions avec différents ratios
+    matrixStrategies.forEach(strat => {
+      // Ratios: 25%, 50%, 75%, 100%
+      [25, 50, 75, 100].forEach(ratio => {
+        fullStrategyList.push({
+          components: [...strat.components],
+          coverageRatio: ratio,
+          name: strat.name
+        });
+      });
+    });
+    
+    // Remplacer la liste de stratégies actuelle
+    setMatrixStrategies(fullStrategyList);
+    
+    // Générer la matrice avec ces stratégies
+    setTimeout(() => {
+      generateRiskMatrix();
+    }, 100);
+  };
+
+  // Ajouter cette fonction pour sauvegarder la matrice de risque
+  const saveRiskMatrix = () => {
+    if (riskMatrixResults.length === 0) {
+      alert("No risk matrix results to save");
+      return;
+    }
+
+    const name = prompt("Enter a name for this risk matrix:", "Risk Matrix " + new Date().toLocaleDateString());
+    if (!name) return;
+
+    const newMatrix: SavedRiskMatrix = {
+      id: Date.now().toString(),
+      name,
+      timestamp: Date.now(),
+      priceRanges: [...priceRanges],
+      strategies: [...matrixStrategies],
+      results: [...riskMatrixResults],
+    };
+
+    const updatedMatrices = [...savedRiskMatrices, newMatrix];
+    setSavedRiskMatrices(updatedMatrices);
+    localStorage.setItem('savedRiskMatrices', JSON.stringify(updatedMatrices));
+
+    alert("Risk matrix saved successfully!");
+  };
+
+  // Ajouter cette fonction pour exporter la matrice de risque en PDF
+  const exportRiskMatrixToPDF = async () => {
+    if (riskMatrixResults.length === 0) {
+      alert("No risk matrix results to export");
+      return;
+    }
+
+    try {
+      // Créer un élément temporaire pour le contenu du PDF
+      const tempDiv = document.createElement('div');
+      tempDiv.className = 'p-8 bg-white';
+      tempDiv.innerHTML = `
+        <h1 class="text-2xl font-bold mb-4">Risk Matrix Results</h1>
+        <div class="mb-4">
+          <h2 class="text-lg font-semibold">Price Ranges</h2>
+          <ul>
+            ${priceRanges.map(range => `
+              <li>Range: [${range.min}, ${range.max}] - Probability: ${range.probability}%</li>
+            `).join('')}
+          </ul>
+        </div>
+      `;
+
+      // Créer la table des résultats
+      const table = document.createElement('table');
+      table.className = 'w-full border-collapse';
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th class="border p-2 text-left">Stratégie</th>
+            <th class="border p-2 text-center">Ratio de couverture</th>
+            <th class="border p-2 text-center">Coût de la couverture (M$)</th>
+            ${priceRanges.map(range => `
+              <th class="border p-2 text-center">${range.probability}%<br>[${range.min},${range.max}]</th>
+            `).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${riskMatrixResults.map(result => `
+            <tr>
+              <td class="border p-2">
+                ${result.strategy.map(comp => 
+                  comp.type === 'swap' 
+                    ? 'Swap' 
+                    : `${comp.type === 'call' ? 'Call' : 'Put'} ${comp.strike}${comp.strikeType === 'percent' ? '%' : ''}`
+                ).join('<br>')}
+              </td>
+              <td class="border p-2 text-center">${result.coverageRatio}%</td>
+              <td class="border p-2 text-center">${(result.hedgingCost / 1000000).toFixed(1)}</td>
+              ${priceRanges.map(range => {
+                const rangeKey = `${range.min},${range.max}`;
+                const value = (result.differences[rangeKey] / 1000000).toFixed(1);
+                const color = result.differences[rangeKey] > 0 
+                  ? 'rgba(0, 128, 0, 0.2)' 
+                  : 'rgba(255, 0, 0, 0.2)';
+                return `<td class="border p-2 text-center" style="background-color: ${color}">${value}</td>`;
+              }).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+      
+      tempDiv.appendChild(table);
+      document.body.appendChild(tempDiv);
+
+      // Générer le PDF
+      const pdf = new jsPDF('landscape', 'pt', 'a4');
+      
+      // Utiliser html2canvas pour rendre la table en image
+      const canvas = await html2canvas(tempDiv, {
+        scale: 2,
+        useCORS: true,
+        logging: false
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const imgWidth = pdf.internal.pageSize.getWidth();
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
+      
+      // Télécharger le PDF
+      pdf.save('risk_matrix_results.pdf');
+      
+      // Nettoyer
+      document.body.removeChild(tempDiv);
+      
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      alert("Error generating PDF. Please try again.");
+    }
   };
 
   return (
@@ -1334,6 +1687,7 @@ const Index = () => {
           <TabsTrigger value="parameters">Strategy Parameters</TabsTrigger>
           <TabsTrigger value="stress">Stress Testing</TabsTrigger>
           <TabsTrigger value="backtest">Historical Backtest</TabsTrigger>
+          <TabsTrigger value="riskmatrix">Risk Matrix Generator</TabsTrigger>
         </TabsList>
         
         <TabsContent value="parameters">
@@ -1517,15 +1871,6 @@ const Index = () => {
           <Button onClick={calculateResults} className="w-full">
             Calculate Strategy Results
           </Button>
-          {activeStressTest && (
-            <Button 
-              onClick={clearStressTest} 
-              variant="outline" 
-              className="w-full mt-2"
-            >
-              Clear Active Scenario
-            </Button>
-          )}
         </TabsContent>
 
         <TabsContent value="stress">
@@ -1614,159 +1959,90 @@ const Index = () => {
                 {Object.entries(stressTestScenarios).map(([key, scenario]) => (
                   <Card
                     key={key}
-                    className={`w-full text-left p-3 hover:bg-gray-50 ${
-                      activeStressTest === key ? 'border-2 border-blue-500' : ''
-                    }`}
+                    className="w-full text-left p-3 hover:bg-gray-50"
                   >
                     <button
                       onClick={() => toggleInputs(key)}
                       className="w-full text-left p-3 hover:bg-gray-50"
                     >
-                      <div className="flex justify-between items-center">
                       <span className="font-medium">{scenario.name}</span>
-                        <div className="flex items-center gap-2">
-                          {activeStressTest === key && (
-                            <span className="text-sm text-blue-500">Active</span>
-                          )}
                       <svg
-                            className={`w-4 h-4 transform transition-transform ${
-                              showInputs[key] ? 'rotate-180' : ''
-                            }`}
+                        className={`w-4 h-4 transform transition-transform ${showInputs[key] ? 'rotate-180' : ''}`}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                       </svg>
-                        </div>
-                      </div>
                     </button>
                     {showInputs[key] && (
                       <div className="px-3 pb-3">
                         <p className="text-xs text-gray-600 mb-2">{scenario.description}</p>
                         <div className="space-y-2">
-                          {/* Only show volatility and drift for scenarios other than contango and backwardation */}
-                          {key !== 'contango' && key !== 'backwardation' && (
-                            <>
                           <div>
-                                <label className="block text-sm font-medium mb-1">
-                                  Volatility (%)
-                                  <span className="text-xs text-gray-500 ml-1">
-                                    (0-100)
-                                  </span>
-                                </label>
+                            <label className="block text-sm font-medium mb-1">Volatility (%)</label>
                             <Input
                               className="h-7"
                               type="number"
                               value={scenario.volatility * 100}
-                                  onChange={(e) => {
-                                    const value = Number(e.target.value);
-                                    if (!isNaN(value) && value >= 0) {
-                                      updateScenario(key, 'volatility', value / 100);
-                                    }
-                                  }}
-                                  min="0"
-                                  max="100"
+                              onChange={(e) => updateScenario(key, 'volatility', Number(e.target.value) / 100)}
                               step="0.1"
                             />
                           </div>
                           <div>
-                                <label className="block text-sm font-medium mb-1">
-                                  Drift (%)
-                                  <span className="text-xs text-gray-500 ml-1">
-                                    (-50 to 50)
-                                  </span>
-                                </label>
+                            <label className="block text-sm font-medium mb-1">Drift (%)</label>
                             <Input
                               className="h-7"
                               type="number"
                               value={scenario.drift * 100}
-                                  onChange={(e) => {
-                                    const value = Number(e.target.value);
-                                    if (!isNaN(value) && value >= -50 && value <= 50) {
-                                      updateScenario(key, 'drift', value / 100);
-                                    }
-                                  }}
-                                  min="-50"
-                                  max="50"
+                              onChange={(e) => updateScenario(key, 'drift', Number(e.target.value) / 100)}
                               step="0.1"
                             />
                           </div>
-                            </>
-                          )}
                           <div>
-                            <label className="block text-sm font-medium mb-1">
-                              Price Shock (%)
-                              <span className="text-xs text-gray-500 ml-1">
-                                {key === 'contango' ? '(Monthly price increase %)' : 
-                                 key === 'backwardation' ? '(Monthly price decrease %)' : 
-                                 '(-100 to 100)'}
-                              </span>
-                            </label>
+                            <label className="block text-sm font-medium mb-1">Price Shock (%)</label>
                             <Input
                               className="h-7"
                               type="number"
                               value={scenario.priceShock * 100}
-                              onChange={(e) => {
-                                const value = Number(e.target.value);
-                                if (!isNaN(value) && value >= 0 && value <= 100) {
-                                  updateScenario(key, 'priceShock', value / 100);
-                                }
-                              }}
-                              min="0"
-                              max="100"
+                              onChange={(e) => updateScenario(key, 'priceShock', Number(e.target.value) / 100)}
                               step="0.1"
                             />
                           </div>
-                          {/* Display forwardBasis only for scenarios that use it and aren't contango/backwardation */}
-                          {scenario.forwardBasis !== undefined && key !== 'contango' && key !== 'backwardation' && (
+                          {scenario.forwardBasis !== undefined && (
                             <div>
-                              <label className="block text-sm font-medium mb-1">
-                                Monthly Basis (%)
-                                <span className="text-xs text-gray-500 ml-1">
-                                  (-10 to 10)
-                                </span>
-                              </label>
+                              <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
                               <Input
                                 className="h-7"
                                 type="number"
                                 value={scenario.forwardBasis * 100}
-                                onChange={(e) => {
-                                  const value = Number(e.target.value);
-                                  if (!isNaN(value) && value >= -10 && value <= 10) {
-                                    updateScenario(key, 'forwardBasis', value / 100);
-                                  }
-                                }}
-                                min="-10"
-                                max="10"
+                                onChange={(e) => updateScenario(key, 'forwardBasis', Number(e.target.value) / 100)}
                                 step="0.1"
                               />
                             </div>
                           )}
+                          {scenario.realBasis !== undefined && (
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
+                              <Input
+                                className="h-7"
+                                type="number"
+                                value={scenario.realBasis * 100}
+                                onChange={(e) => updateScenario(key, 'realBasis', Number(e.target.value) / 100)}
+                                step="0.1"
+                              />
                         </div>
-                        <div className="flex gap-2 mt-4">
+                          )}
+                        </div>
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
                             applyStressTest(key);
                           }}
-                            className="flex-1 bg-[#0f172a] text-white hover:bg-[#1e293b]"
+                          className="w-full bg-[#0f172a] text-white hover:bg-[#1e293b] mt-4"
                         >
                           Run Scenario
                         </Button>
-                          {scenario.isEditable && (
-                            <Button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                resetScenario(key);
-                              }}
-                              variant="outline"
-                              className="flex-shrink-0"
-                            >
-                              Reset
-                            </Button>
-                          )}
-                        </div>
                       </div>
                     )}
                   </Card>
@@ -1779,15 +2055,6 @@ const Index = () => {
             <Button onClick={calculateResults} className="flex-1">
               Calculate Results
             </Button>
-            {activeStressTest && (
-              <Button 
-                onClick={clearStressTest} 
-                variant="outline" 
-                className="w-full mt-2"
-              >
-                Clear Active Scenario
-              </Button>
-            )}
             {results && (
               <>
                 <Button onClick={saveScenario} className="flex items-center gap-2">
@@ -1807,72 +2074,51 @@ const Index = () => {
               <CardTitle>Historical Data Input</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
+              <div className="flex gap-4 mb-4">
                     <Button 
-                      variant="outline" 
+                  variant={showHistoricalData ? "outline" : "default"}
                       onClick={() => setShowHistoricalData(!showHistoricalData)}
                     >
                       {showHistoricalData ? 'Hide' : 'Show'} Historical Data
                     </Button>
                     <Button 
-                      variant="outline" 
+                  variant={showMonthlyStats ? "outline" : "default"}
                       onClick={() => setShowMonthlyStats(!showMonthlyStats)}
                     >
                       {showMonthlyStats ? 'Hide' : 'Show'} Monthly Statistics
                     </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button 
-                      onClick={addHistoricalDataRow} 
-                      variant="outline" 
-                      className="flex items-center gap-2"
-                    >
-                      <Plus size={16} /> Add Row
+                <div className="flex-grow" />
+                <Button onClick={addHistoricalDataRow}>
+                  <Plus className="w-4 h-4 mr-2" /> Add Row
                     </Button>
-                    <Button 
-                      onClick={handleFileUpload} 
-                      className="flex items-center gap-2"
-                    >
-                      <Plus size={16} /> Import Historical Data
+                <Button variant="default" className="relative">
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={importHistoricalData}
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                  Import Historical Data
                     </Button>
-                    <Button 
-                      onClick={clearHistoricalData}
-                      variant="destructive" 
-                      className="flex items-center gap-2"
-                    >
-                      <Trash2 size={16} /> Clear Data
+                <Button variant="destructive" onClick={clearHistoricalData}>
+                  Clear Data
                     </Button>
-                  </div>
                 </div>
                 
                 {showHistoricalData && (
                   <div className="overflow-x-auto">
-                    <table className="min-w-full border-collapse">
+                    <table className="w-full border-collapse">
                       <thead>
                         <tr>
-                          <th className="border p-2">Date</th>
-                          <th className="border p-2">Price</th>
+                          <th className="border p-2 bg-gray-50">Date</th>
+                          <th className="border p-2 bg-gray-50">Price</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {historicalData.map((row, index) => (
+                        {historicalData.map((point, index) => (
                           <tr key={index}>
-                            <td className="border p-2">
-                              <Input
-                                type="date"
-                                value={row.date}
-                                onChange={(e) => updateHistoricalData(index, 'date', e.target.value)}
-                              />
-                            </td>
-                            <td className="border p-2">
-                              <Input
-                                type="number"
-                                value={row.price}
-                                onChange={(e) => updateHistoricalData(index, 'price', Number(e.target.value))}
-                              />
-                            </td>
+                            <td className="border p-2">{point.date}</td>
+                            <td className="border p-2">{point.price.toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1880,15 +2126,15 @@ const Index = () => {
                   </div>
                 )}
 
-                {showMonthlyStats && (
-                  <div className="mt-4">
-                    <h3 className="text-lg font-medium mb-2">Monthly Statistics</h3>
-                    <table className="min-w-full border-collapse">
+              {showMonthlyStats && monthlyStats.length > 0 && (
+                <div className="mt-8">
+                  <h3 className="text-lg font-semibold mb-4">Monthly Statistics</h3>
+                  <table className="w-full border-collapse">
                       <thead>
                         <tr>
-                          <th className="border p-2">Month</th>
-                          <th className="border p-2">Average Price</th>
-                          <th className="border p-2">Historical Volatility</th>
+                          <th className="border p-2 bg-gray-50">Month</th>
+                          <th className="border p-2 bg-gray-50">Average Price</th>
+                          <th className="border p-2 bg-gray-50">Historical Volatility</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1896,14 +2142,195 @@ const Index = () => {
                           <tr key={index}>
                             <td className="border p-2">{stat.month}</td>
                             <td className="border p-2">{stat.avgPrice.toFixed(2)}</td>
-                            <td className="border p-2">{(stat.volatility * 100).toFixed(2)}%</td>
+                            <td className="border p-2">
+                              {stat.volatility ? `${(stat.volatility * 100).toFixed(2)}%` : 'N/A'}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
                 )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="riskmatrix">
+          <Card>
+            <CardHeader>
+              <CardTitle>Risk Matrix Generator</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-semibold mb-4">Price Ranges</h3>
+                  <div className="space-y-4">
+                    {priceRanges.map((range, index) => (
+                      <div key={index} className="grid grid-cols-3 gap-4">
+                        <div>
+                          <Label>Min</Label>
+                          <Input 
+                            type="number" 
+                            value={range.min}
+                            onChange={(e) => updatePriceRange(index, 'min', Number(e.target.value))}
+                          />
               </div>
+                        <div>
+                          <Label>Max</Label>
+                          <Input 
+                            type="number" 
+                            value={range.max}
+                            onChange={(e) => updatePriceRange(index, 'max', Number(e.target.value))}
+                          />
+                        </div>
+                        <div>
+                          <Label>Probability (%)</Label>
+                          <Input 
+                            type="number" 
+                            value={range.probability}
+                            onChange={(e) => updatePriceRange(index, 'probability', Number(e.target.value))}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex justify-between">
+                      <Button
+                        onClick={() => setPriceRanges([...priceRanges, { min: 0, max: 0, probability: 0 }])}
+                        size="sm"
+                      >
+                        Add Range
+                      </Button>
+                      <Button
+                        onClick={() => setPriceRanges(priceRanges.slice(0, -1))}
+                        variant="destructive"
+                        size="sm"
+                        disabled={priceRanges.length <= 1}
+                      >
+                        Remove Last
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold mb-4">Strategies</h3>
+                  <div className="space-y-4">
+                    {matrixStrategies.map((strat, index) => (
+                      <div key={index} className="p-4 border rounded-md">
+                        <div className="flex justify-between items-center mb-2">
+                          <h4 className="font-medium">{strat.name}</h4>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => removeMatrixStrategy(index)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div>
+                          <Label>Coverage Ratio (%)</Label>
+                          <div className="flex items-center gap-4">
+                            <Slider
+                              value={[strat.coverageRatio]}
+                              min={0}
+                              max={100}
+                              step={1}
+                              onValueChange={(value) => handleCoverageRatioChange(index, value[0])}
+                              className="flex-1"
+                            />
+                            <span className="w-12 text-right">{strat.coverageRatio}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <Button
+                      onClick={addMatrixStrategy}
+                      className="w-full"
+                      disabled={strategy.length === 0}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Current Strategy
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-2">
+                <Button onClick={generateRiskMatrix} className="w-full">
+                  Generate Risk Matrix
+                </Button>
+                <Button 
+                  onClick={generateFullRiskAnalysis} 
+                  className="w-full"
+                  variant="outline"
+                >
+                  Full Analysis Risk
+                </Button>
+                {riskMatrixResults.length > 0 && (
+                  <>
+                    <Button 
+                      onClick={saveRiskMatrix} 
+                      className="w-full"
+                      variant="outline"
+                    >
+                      <Save className="h-4 w-4 mr-2" />
+                      Save Risk Matrix
+                    </Button>
+                    <Button 
+                      onClick={exportRiskMatrixToPDF} 
+                      className="w-full"
+                      variant="outline"
+                    >
+                      Export as PDF
+                    </Button>
+                  </>
+                )}
+              </div>
+
+              {riskMatrixResults.length > 0 && (
+                <div className="mt-8 overflow-x-auto">
+                  <h3 className="text-lg font-semibold mb-4">Risk Matrix Results</h3>
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr>
+                        <th className="border p-2">Stratégie</th>
+                        <th className="border p-2">Ratio de couverture</th>
+                        <th className="border p-2">Coût de la couverture (M$)</th>
+                        {priceRanges.map((range, i) => (
+                          <th key={i} className="border p-2">{range.probability}%<br/>[{range.min},{range.max}]</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {riskMatrixResults.map((result, i) => (
+                        <tr key={i}>
+                          <td className="border p-2">
+                            {result.strategy.map((comp, j) => (
+                              <div key={j}>
+                                {comp.type === 'swap' ? 'Swap' : `${comp.type === 'call' ? 'Call' : 'Put'} ${comp.strike}${comp.strikeType === 'percent' ? '%' : ''}`}
+                              </div>
+                            ))}
+                          </td>
+                          <td className="border p-2">{result.coverageRatio}%</td>
+                          <td className="border p-2">{(result.hedgingCost / 1000000).toFixed(1)}</td>
+                          {priceRanges.map((range, j) => {
+                            const rangeKey = `${range.min},${range.max}`;
+                            return (
+                              <td 
+                                key={j} 
+                                className="border p-2"
+                                style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
+                              >
+                                {(result.differences[rangeKey] / 1000000).toFixed(1)}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1947,9 +2374,8 @@ const Index = () => {
                   </thead>
                   <tbody>
                     {results.map((row, i) => {
-                      const [month, year] = row.date.split(' ');
-                      const monthIndex = monthNames.indexOf(month);
-                      const monthKey = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+                      const date = new Date(row.date);
+                      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
                       return (
                       <tr key={i}>
                         <td className="border p-2">{row.date}</td>
@@ -1957,8 +2383,14 @@ const Index = () => {
                         <td className="border p-2">
                           <Input
                             type="number"
-                            value={manualForwards[monthKey] || row.forward.toFixed(2)}
+                              value={(() => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                return manualForwards[monthKey] || row.forward.toFixed(2);
+                              })()}
                             onChange={(e) => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
                               const newValue = e.target.value === '' ? '' : Number(e.target.value);
                               setManualForwards(prev => ({
                                 ...prev,
@@ -1973,10 +2405,16 @@ const Index = () => {
                         <td className="border p-2">
                           <Input
                             type="number"
-                            value={realPriceParams.useSimulation ? 
+                              value={(() => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                return realPriceParams.useSimulation ? 
                               row.realPrice.toFixed(2) : 
-                              (realPrices[monthKey] || row.forward)}
+                                  (realPrices[monthKey] || row.forward);
+                              })()}
                             onChange={(e) => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
                               const newValue = e.target.value === '' ? '' : Number(e.target.value);
                               setRealPrices(prev => ({
                                 ...prev,
@@ -2231,5 +2669,3 @@ const Index = () => {
 };
 
 export default Index; 
-
-
