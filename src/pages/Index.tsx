@@ -23,6 +23,8 @@ interface StressTestScenario {
   realBasis?: number;
   isCustom?: boolean;
   isEditable?: boolean;
+  isHistorical?: boolean;
+  historicalData?: HistoricalDataPoint[];
 }
 
 interface StrategyComponent {
@@ -367,6 +369,59 @@ const Index = () => {
     const saved = localStorage.getItem('savedRiskMatrices');
     return saved ? JSON.parse(saved) : [];
   });
+
+  // Ajouter un état pour stocker les volumes personnalisés par mois
+  const [customVolumes, setCustomVolumes] = useState<Record<string, number>>({});
+
+  // Ajouter une fonction pour gérer les changements de volume
+  const handleVolumeChange = (monthKey: string, newVolume: number) => {
+    // Mettre à jour l'état des volumes personnalisés
+    setCustomVolumes(prev => ({
+      ...prev,
+      [monthKey]: newVolume
+    }));
+    
+    // Recalculer les résultats avec les nouveaux volumes
+    recalculateResults();
+  };
+
+  // Fonction pour recalculer les résultats avec les volumes personnalisés
+  const recalculateResults = () => {
+    if (!results) return;
+    
+    const updatedResults = results.map(row => {
+      // Créer une clé unique pour le mois
+      const date = new Date(row.date);
+      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+      
+      // Utiliser le volume personnalisé s'il existe, sinon le volume par défaut
+      const volume = customVolumes[monthKey] || row.monthlyVolume;
+      
+      // Recalculer les coûts et le P&L avec le nouveau volume
+      const unhedgedCost = -(volume * row.realPrice);
+      
+      // Calculer les volumes couverts/non couverts en fonction des options
+      const totalSwapPercentage = strategy
+        .filter(s => s.type === 'swap')
+        .reduce((sum, swap) => sum + swap.quantity, 0) / 100;
+      
+      const hedgedCost = -(volume * row.realPrice) + 
+        (volume * (1 - totalSwapPercentage) * row.totalPayoff) - 
+        (volume * (1 - totalSwapPercentage) * row.strategyPrice);
+      
+      const deltaPnL = hedgedCost - unhedgedCost;
+      
+      return {
+        ...row,
+        monthlyVolume: volume,
+        unhedgedCost,
+        hedgedCost,
+        deltaPnL
+      };
+    });
+    
+    setResults(updatedResults);
+  };
 
   // Calculate Black-Scholes Option Price
   const calculateOptionPrice = (type, S, K, r, t, sigma, date?) => {
@@ -727,24 +782,33 @@ const Index = () => {
     return result && 
       typeof result.hedgedCost === 'number' &&
       typeof result.unhedgedCost === 'number' &&
-      typeof result.deltaPnL === 'number';
+      typeof result.deltaPnL === 'number' &&
+      typeof result.strategyPrice === 'number' &&
+      typeof result.monthlyVolume === 'number';
   };
 
   // Update the yearlyResults calculation with type checking
   const calculateYearlyResults = (results: Result[]) => {
-    return results.reduce((acc: Record<string, { hedgedCost: number; unhedgedCost: number; deltaPnL: number }>, row) => {
+    return results.reduce((acc: Record<string, { 
+      hedgedCost: number; 
+      unhedgedCost: number; 
+      deltaPnL: number;
+      strategyPremium: number; // Added this property
+    }>, row) => {
       const year = row.date.split(' ')[1];
       if (!acc[year]) {
         acc[year] = {
           hedgedCost: 0,
           unhedgedCost: 0,
-          deltaPnL: 0
+          deltaPnL: 0,
+          strategyPremium: 0 // Initialize the new property
         };
       }
       if (isValidResult(row)) {
         acc[year].hedgedCost += row.hedgedCost;
         acc[year].unhedgedCost += row.unhedgedCost;
         acc[year].deltaPnL += row.deltaPnL;
+        acc[year].strategyPremium += (row.strategyPrice * row.monthlyVolume); // Calculate and add the strategy premium
       }
       return acc;
     }, {});
@@ -806,7 +870,9 @@ const Index = () => {
       realPriceParams,
       activeTab,
       customScenario,
-      stressTestScenarios
+      stressTestScenarios,
+      useImpliedVol,
+      impliedVolatilities
     };
     localStorage.setItem('calculatorState', JSON.stringify(state));
   }, [
@@ -819,7 +885,9 @@ const Index = () => {
     realPriceParams,
     activeTab,
     customScenario,
-    stressTestScenarios
+    stressTestScenarios,
+    useImpliedVol,
+    impliedVolatilities
   ]);
 
   const resetScenario = (key: string) => {
@@ -967,7 +1035,9 @@ const Index = () => {
         forwardBasis: 0,
         isCustom: true
       },
-      stressTestScenarios: DEFAULT_SCENARIOS
+      stressTestScenarios: DEFAULT_SCENARIOS,
+      useImpliedVol: false,
+      impliedVolatilities: {}
     };
     localStorage.setItem('calculatorState', JSON.stringify(state));
   };
@@ -1331,55 +1401,78 @@ const Index = () => {
     setMonthlyStats([]);
   };
 
-  // Ajouter cette fonction pour générer la matrice de risque
+  // Simplifier la génération de la matrice de risque
   const generateRiskMatrix = () => {
-    const results: RiskMatrixResult[] = [];
+    // Vérifier si nous avons des résultats
+    if (!results || results.length === 0) {
+      alert("Veuillez d'abord calculer les résultats");
+      return;
+    }
+
+    const matrixResults: RiskMatrixResult[] = [];
     
     // Pour chaque stratégie configurée
     matrixStrategies.forEach(strategyConfig => {
+      // Calculer le coût total de la stratégie (somme des primes)
+      // Utiliser les résultats existants, pas le tableau vide
+      const strategyPremium = results.reduce((sum, row) => 
+        sum + (row.strategyPrice * row.monthlyVolume), 0);
+      
       const costs: {[key: string]: number} = {};
       const differences: {[key: string]: number} = {};
-      let totalHedgingCost = 0;
       
-      // Calculer le coût de couverture (prix moyen de la stratégie * ratio * volume)
-      const strategyPrice = calculateStrategyPrice(strategyConfig.components);
-      totalHedgingCost = strategyPrice * strategyConfig.coverageRatio / 100 * params.totalVolume;
-      
-      // Pour chaque plage de prix
+      // Pour chaque intervalle de prix
       priceRanges.forEach(range => {
-        // Prendre le prix moyen de la plage
-        const avgPrice = (range.min + range.max) / 2;
+        const midPrice = (range.min + range.max) / 2;
+        let totalPnL = 0;
         
-        // Calculer le coût sans couverture pour ce prix
-        const unhedgedCost = params.totalVolume * avgPrice;
+        // Simuler chaque mois avec le prix médian constant
+        for (let i = 0; i < params.monthsToHedge; i++) {
+        const monthlyVolume = params.totalVolume / params.monthsToHedge;
+          const coveredVolume = monthlyVolume * (strategyConfig.coverageRatio/100);
+          
+          // Utiliser les composants de stratégie du mois actuel
+          const strategyPrice = results[Math.min(i, results.length-1)].strategyPrice;
+          
+          // Calculer le payoff pour ce prix médian
+          const totalPayoff = strategyConfig.components.reduce((sum, comp) => {
+            const strike = comp.strikeType === 'percent' 
+              ? params.spotPrice * (comp.strike / 100) 
+              : comp.strike;
+            
+            if (comp.type === 'call') {
+              return sum + Math.max(0, midPrice - strike) * (comp.quantity/100);
+            } else if (comp.type === 'put') {
+              return sum + Math.max(0, strike - midPrice) * (comp.quantity/100);
+            } else { // swap
+              return sum + (midPrice - strike) * (comp.quantity/100);
+            }
+          }, 0);
+
+          // Calculer les coûts pour ce mois
+          const unhedgedCost = -(monthlyVolume * midPrice);
+          const hedgedCost = -(monthlyVolume * midPrice) + 
+            (coveredVolume * totalPayoff) - 
+            (coveredVolume * strategyPrice);
+          
+          totalPnL += (hedgedCost - unhedgedCost);
+        }
         
-        // Calculer le payoff de la stratégie à ce prix
-        const strategyPayoff = calculateStrategyPayoffAtPrice(strategyConfig.components, avgPrice);
-        
-        // Calculer le coût total avec couverture
-        const hedgedVolume = params.totalVolume * (1 - strategyConfig.coverageRatio / 100);
-        const hedgedCost = hedgedVolume * avgPrice + totalHedgingCost - 
-                         (strategyPayoff * strategyConfig.coverageRatio / 100 * params.totalVolume);
-        
-        // Calculer la différence
-        const difference = unhedgedCost - hedgedCost;
-        
-        // Stocker les résultats
+        // Stocker le P&L total pour cet intervalle
         const rangeKey = `${range.min},${range.max}`;
-        costs[rangeKey] = hedgedCost;
-        differences[rangeKey] = difference;
+        differences[rangeKey] = totalPnL;
       });
       
-      results.push({
+      matrixResults.push({
         strategy: strategyConfig.components,
         coverageRatio: strategyConfig.coverageRatio,
         costs,
         differences,
-        hedgingCost: totalHedgingCost
+        hedgingCost: strategyPremium
       });
     });
     
-    setRiskMatrixResults(results);
+    setRiskMatrixResults(matrixResults);
   };
 
   // Ajouter cette fonction pour ajouter une stratégie à la matrice
@@ -1641,6 +1734,173 @@ const Index = () => {
     } catch (error) {
       console.error("Error generating PDF:", error);
       alert("Error generating PDF. Please try again.");
+    }
+  };
+
+  // Ajouter cette fonction pour calculer la valeur attendue de chaque stratégie
+  const calculateExpectedValue = (result: RiskMatrixResult) => {
+    let expectedValue = 0;
+    let totalProbability = 0;
+    
+    // Parcourir chaque plage de prix
+    priceRanges.forEach(range => {
+      const rangeKey = `${range.min},${range.max}`;
+      const difference = result.differences[rangeKey]; // Profit/Perte dans cet intervalle
+      const probability = range.probability / 100; // Convertir le pourcentage en décimal
+      
+      // Ajouter la contribution pondérée de cette plage à la valeur attendue
+      expectedValue += difference * probability;
+      totalProbability += probability;
+    });
+    
+    // Normaliser si les probabilités ne somment pas exactement à 1
+    if (totalProbability !== 1) {
+      expectedValue = expectedValue / totalProbability;
+    }
+    
+    return expectedValue;
+  };
+
+  // Ajouter une fonction pour sauvegarder les résultats du backtest historique
+  const saveHistoricalBacktestResults = () => {
+    if (!results) {
+      alert("Pas de résultats à sauvegarder. Veuillez d'abord exécuter le backtest.");
+      return;
+    }
+
+    // Demander à l'utilisateur de nommer son scénario
+    const scenarioName = prompt("Nom du scénario:", "Historical Backtest " + new Date().toLocaleDateString());
+    if (!scenarioName) return;
+
+    // Créer un nouvel objet scénario
+    const newScenario: SavedScenario = {
+      id: Date.now().toString(),
+      name: scenarioName,
+      timestamp: Date.now(),
+      params: {...params},
+      strategy: [...strategy],
+      results: [...results],
+      payoffData: [...payoffData],
+      // Indiquer que c'est un backtest historique
+      stressTest: {
+        name: "Historical Backtest",
+        description: "Calculated from historical data",
+        volatility: 0,  // Ces valeurs ne sont pas utilisées dans le backtest historique
+        drift: 0,       // mais sont nécessaires pour la structure
+        priceShock: 0,
+        isHistorical: true,  // Marquer comme backtest historique
+        historicalData: [...historicalData]  // Ajouter les données historiques
+      }
+    };
+
+    // Récupérer les scénarios existants
+    const savedScenariosStr = localStorage.getItem('optionScenarios');
+    const savedScenarios: SavedScenario[] = savedScenariosStr 
+      ? JSON.parse(savedScenariosStr) 
+      : [];
+    
+    // Ajouter le nouveau scénario
+    savedScenarios.push(newScenario);
+    
+    // Sauvegarder dans localStorage
+    localStorage.setItem('optionScenarios', JSON.stringify(savedScenarios));
+    
+    alert("Scénario sauvegardé avec succès!");
+  };
+
+  // Ajouter une fonction pour exporter les résultats du backtest historique en PDF
+  const exportHistoricalBacktestToPDF = () => {
+    if (!results) {
+      alert("Pas de résultats à exporter. Veuillez d'abord exécuter le backtest.");
+      return;
+    }
+
+    // Configurer jsPDF
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const pageWidth = doc.internal.pageSize.getWidth();
+    
+    // Titre
+    doc.setFontSize(18);
+    doc.text('Historical Backtest Results', pageWidth / 2, 15, { align: 'center' });
+    
+    // Date
+    doc.setFontSize(12);
+    doc.text(`Generated on ${new Date().toLocaleDateString()}`, pageWidth / 2, 25, { align: 'center' });
+    
+    // Paramètres de base
+    doc.setFontSize(14);
+    doc.text('Basic Parameters', 10, 35);
+    doc.setFontSize(10);
+    doc.text(`Start Date: ${params.startDate}`, 15, 45);
+    doc.text(`Months to Hedge: ${params.monthsToHedge}`, 15, 50);
+    doc.text(`Interest Rate: ${params.interestRate}%`, 15, 55);
+    doc.text(`Total Volume: ${params.totalVolume}`, 15, 60);
+    doc.text(`Spot Price: ${params.spotPrice}`, 15, 65);
+    
+    // Stratégie
+    doc.setFontSize(14);
+    doc.text('Strategy Components', 10, 75);
+    strategy.forEach((comp, index) => {
+      const yPos = 85 + (index * 10);
+      const strike = comp.strikeType === 'percent' 
+        ? `${comp.strike}%` 
+        : comp.strike.toString();
+      doc.setFontSize(10);
+      doc.text(`Component ${index+1}: ${comp.type.toUpperCase()}, Strike: ${strike}, Vol: ${comp.volatility}%, Qty: ${comp.quantity}%`, 15, yPos);
+    });
+    
+    // Historical Data Summary
+    doc.setFontSize(14);
+    doc.text('Historical Data Summary', 10, 120);
+    doc.setFontSize(10);
+    doc.text(`Number of Data Points: ${historicalData.length}`, 15, 130);
+    if (monthlyStats.length > 0) {
+      doc.text(`Average Historical Volatility: ${
+        monthlyStats.reduce((sum, stat) => sum + (stat.volatility || 0), 0) / 
+        monthlyStats.filter(stat => stat.volatility !== null).length * 100
+      }%`, 15, 135);
+    }
+    
+    // Résultats totaux
+    const totalHedgedCost = results.reduce((sum, row) => sum + row.hedgedCost, 0);
+    const totalUnhedgedCost = results.reduce((sum, row) => sum + row.unhedgedCost, 0);
+    const totalPnL = results.reduce((sum, row) => sum + row.deltaPnL, 0);
+    const costReduction = (totalPnL / Math.abs(totalUnhedgedCost)) * 100;
+    
+    doc.setFontSize(14);
+    doc.text('Total Results', 10, 150);
+    doc.setFontSize(10);
+    doc.text(`Total Cost with Hedging: ${totalHedgedCost.toFixed(2)}`, 15, 160);
+    doc.text(`Total Cost without Hedging: ${totalUnhedgedCost.toFixed(2)}`, 15, 165);
+    doc.text(`Total P&L: ${totalPnL.toFixed(2)}`, 15, 170);
+    doc.text(`Cost Reduction: ${costReduction.toFixed(2)}%`, 15, 175);
+    
+    // Capturer le graphique P&L et l'ajouter
+    const pnlChartContainer = document.getElementById('historical-backtest-pnl-chart');
+    if (pnlChartContainer) {
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text('P&L Evolution', 10, 15);
+      
+      html2canvas(pnlChartContainer, {
+        ...options,
+        html2canvas: {
+          ...options.html2canvas,
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          letterRendering: true,
+          allowTaint: true
+        }
+      }).then(canvas => {
+        const imgData = canvas.toDataURL('image/png');
+        doc.addImage(imgData, 'PNG', 10, 25, 190, 100);
+        
+        // Sauvegarder le PDF
+        doc.save('Historical_Backtest_Results.pdf');
+      });
+    } else {
+      doc.save('Historical_Backtest_Results.pdf');
     }
   };
 
@@ -2071,7 +2331,7 @@ const Index = () => {
         <TabsContent value="backtest">
           <Card>
             <CardHeader>
-              <CardTitle>Historical Data Input</CardTitle>
+              <CardTitle>Historical Data Backtest</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex gap-4 mb-4">
@@ -2153,6 +2413,29 @@ const Index = () => {
                 )}
             </CardContent>
           </Card>
+          
+          {results && (
+            <div>
+              {/* Affichage des résultats... */}
+              
+              {/* Ajouter ces boutons ici si nécessaire */}
+              <div className="mt-6 flex flex-col md:flex-row gap-3">
+                <Button 
+                  onClick={saveHistoricalBacktestResults} 
+                  variant="outline"
+                  className="flex-1"
+                >
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Backtest
+                </Button>
+                <Link to="/saved" className="flex-1">
+                  <Button variant="secondary" className="w-full">
+                    View Saved Scenarios
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="riskmatrix">
@@ -2453,7 +2736,25 @@ const Index = () => {
                         ))}
                         <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
                         <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
-                        <td className="border p-2">{row.monthlyVolume.toFixed(0)}</td>
+                        <td className="border p-2">
+                          <Input
+                            type="number"
+                            value={(() => {
+                              const date = new Date(row.date);
+                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                              return customVolumes[monthKey] || row.monthlyVolume;
+                            })()}
+                            onChange={(e) => {
+                              const date = new Date(row.date);
+                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                              const newValue = e.target.value === '' ? 0 : Number(e.target.value);
+                              handleVolumeChange(monthKey, newValue);
+                            }}
+                            onBlur={() => recalculateResults()}
+                            className="w-32 text-right"
+                            step="1"
+                          />
+                        </td>
                         <td className="border p-2">{row.hedgedCost.toFixed(2)}</td>
                         <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
                         <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
@@ -2574,6 +2875,7 @@ const Index = () => {
                           <th className="border p-2 text-right">Total Cost with Hedging</th>
                           <th className="border p-2 text-right">Total Cost without Hedging</th>
                           <th className="border p-2 text-right">Total P&L</th>
+                          <th className="border p-2 text-right">Total Strategy Premium</th>
                           <th className="border p-2 text-right">Cost Reduction (%)</th>
                         </tr>
                       </thead>
@@ -2595,6 +2897,12 @@ const Index = () => {
                             </td>
                             <td className="border p-2 text-right">
                               {data.deltaPnL.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2
+                              })}
+                            </td>
+                            <td className="border p-2 text-right">
+                              {data.strategyPremium.toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2
                               })}
@@ -2642,6 +2950,15 @@ const Index = () => {
                       <td className="border p-2 font-medium">Total P&L</td>
                       <td className="border p-2 text-right">
                         {results.reduce((sum, row) => sum + row.deltaPnL, 0).toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border p-2 font-medium">Total Strategy Premium</td>
+                      <td className="border p-2 text-right">
+                        {results.reduce((sum, row) => sum + (row.strategyPrice * row.monthlyVolume), 0).toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
