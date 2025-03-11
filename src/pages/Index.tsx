@@ -99,6 +99,7 @@ interface RiskMatrixResult {
   costs: {[key: string]: number};
   differences: {[key: string]: number};
   hedgingCost: number;
+  name: string; // Ajout de la propriété name
 }
 
 // Ajouter cette interface pour les matrices de risque sauvegardées
@@ -1401,7 +1402,34 @@ const Index = () => {
     setMonthlyStats([]);
   };
 
-  // Simplifier la génération de la matrice de risque
+  // Modifier la fonction addCurrentStrategyToMatrix
+  const addCurrentStrategyToMatrix = () => {
+    // Vérifier si la stratégie existe déjà
+    const strategyName = strategy.map(comp => 
+      `${comp.type} ${comp.strike}${comp.strikeType === 'percent' ? '%' : ''}`
+    ).join(' + ');
+    
+    const existingStrategyIndex = matrixStrategies.findIndex(s => 
+      s.name === strategyName && s.coverageRatio === params.coverageRatio
+    );
+    
+    if (existingStrategyIndex !== -1) {
+      alert("Cette stratégie existe déjà dans la matrice de risque.");
+      return;
+    }
+    
+    // Ajouter la nouvelle stratégie sans effacer les existantes
+    setMatrixStrategies(prev => [
+      ...prev,
+      {
+        components: [...strategy],
+        coverageRatio: params.coverageRatio,
+        name: strategyName
+      }
+    ]);
+  };
+
+  // Modifier la fonction generateRiskMatrix pour ajuster le coût de couverture selon le ratio
   const generateRiskMatrix = () => {
     // Vérifier si nous avons des résultats
     if (!results || results.length === 0) {
@@ -1409,14 +1437,31 @@ const Index = () => {
       return;
     }
 
-    const matrixResults: RiskMatrixResult[] = [];
+    // Copier les résultats existants pour les préserver
+    const existingResults = [...riskMatrixResults];
+    const newResults: RiskMatrixResult[] = [];
     
     // Pour chaque stratégie configurée
     matrixStrategies.forEach(strategyConfig => {
-      // Calculer le coût total de la stratégie (somme des primes)
-      // Utiliser les résultats existants, pas le tableau vide
-      const strategyPremium = results.reduce((sum, row) => 
-        sum + (row.strategyPrice * row.monthlyVolume), 0);
+      // Vérifier si cette stratégie existe déjà dans les résultats
+      const existingStrategyIndex = existingResults.findIndex(result => 
+        result.name === strategyConfig.name && 
+        result.coverageRatio === strategyConfig.coverageRatio
+      );
+      
+      // Si la stratégie existe déjà, utiliser les résultats existants
+      if (existingStrategyIndex !== -1) {
+        newResults.push(existingResults[existingStrategyIndex]);
+        return;
+      }
+      
+      // Sinon, calculer de nouveaux résultats pour cette stratégie
+      
+      // Calculer le coût total de la stratégie en tenant compte du ratio de couverture
+      const strategyPremium = results.reduce((sum, row) => {
+        // Appliquer le ratio de couverture au coût de la stratégie
+        return sum + (row.strategyPrice * row.monthlyVolume * (strategyConfig.coverageRatio / 100));
+      }, 0);
       
       const costs: {[key: string]: number} = {};
       const differences: {[key: string]: number} = {};
@@ -1431,7 +1476,7 @@ const Index = () => {
         const monthlyVolume = params.totalVolume / params.monthsToHedge;
           const coveredVolume = monthlyVolume * (strategyConfig.coverageRatio/100);
           
-          // Utiliser les composants de stratégie du mois actuel
+          // Utiliser les strategyPrice existants des résultats
           const strategyPrice = results[Math.min(i, results.length-1)].strategyPrice;
           
           // Calculer le payoff pour ce prix médian
@@ -1463,16 +1508,17 @@ const Index = () => {
         differences[rangeKey] = totalPnL;
       });
       
-      matrixResults.push({
+      newResults.push({
         strategy: strategyConfig.components,
         coverageRatio: strategyConfig.coverageRatio,
         costs,
         differences,
-        hedgingCost: strategyPremium
+        hedgingCost: strategyPremium,
+        name: strategyConfig.name
       });
     });
     
-    setRiskMatrixResults(matrixResults);
+    setRiskMatrixResults(newResults);
   };
 
   // Ajouter cette fonction pour ajouter une stratégie à la matrice
@@ -1574,48 +1620,10 @@ const Index = () => {
     }
   };
 
-  // Ajouter cette fonction pour générer l'analyse complète
-  const generateFullRiskAnalysis = () => {
-    // Vérifier qu'il y a au moins une stratégie
-    if (matrixStrategies.length === 0 && strategy.length > 0) {
-      // Ajouter la stratégie actuelle si aucune n'est dans la liste
-      addMatrixStrategy();
-    }
-    
-    if (matrixStrategies.length === 0) {
-      alert("Please add at least one strategy for analysis");
-      return;
-    }
-    
-    // Créer une nouvelle liste de stratégies avec les ratios standards
-    const fullStrategyList = [];
-    
-    // Ajouter "All Spot" avec 0% de couverture
-    fullStrategyList.push({
-      components: [],
-      coverageRatio: 0,
-      name: "All Spot"
-    });
-    
-    // Pour chaque stratégie, ajouter les versions avec différents ratios
-    matrixStrategies.forEach(strat => {
-      // Ratios: 25%, 50%, 75%, 100%
-      [25, 50, 75, 100].forEach(ratio => {
-        fullStrategyList.push({
-          components: [...strat.components],
-          coverageRatio: ratio,
-          name: strat.name
-        });
-      });
-    });
-    
-    // Remplacer la liste de stratégies actuelle
-    setMatrixStrategies(fullStrategyList);
-    
-    // Générer la matrice avec ces stratégies
-    setTimeout(() => {
-      generateRiskMatrix();
-    }, 100);
+  // Ajouter une fonction pour effacer toutes les stratégies
+  const clearAllStrategies = () => {
+    setMatrixStrategies([]);
+    setRiskMatrixResults([]);
   };
 
   // Ajouter cette fonction pour sauvegarder la matrice de risque
@@ -1685,11 +1693,7 @@ const Index = () => {
           ${riskMatrixResults.map(result => `
             <tr>
               <td class="border p-2">
-                ${result.strategy.map(comp => 
-                  comp.type === 'swap' 
-                    ? 'Swap' 
-                    : `${comp.type === 'call' ? 'Call' : 'Put'} ${comp.strike}${comp.strikeType === 'percent' ? '%' : ''}`
-                ).join('<br>')}
+                ${result.name}
               </td>
               <td class="border p-2 text-center">${result.coverageRatio}%</td>
               <td class="border p-2 text-center">${(result.hedgingCost / 1000000).toFixed(1)}</td>
@@ -1903,6 +1907,135 @@ const Index = () => {
       doc.save('Historical_Backtest_Results.pdf');
     }
   };
+
+  // Ajouter cette fonction après clearAllStrategies
+  const generateGeneralRiskAnalysis = () => {
+    // Vérifier si nous avons des résultats
+    if (!results || results.length === 0) {
+      alert("Veuillez d'abord calculer les résultats");
+      return;
+    }
+    
+    // Vérifier qu'il y a au moins une stratégie
+    if (matrixStrategies.length === 0) {
+      alert("Veuillez d'abord ajouter au moins une stratégie à la matrice");
+      return;
+    }
+
+    // Sauvegarder les stratégies existantes
+    const existingStrategies = [...matrixStrategies];
+    
+    // Préparer les ratios à appliquer
+    const coverageRatios = [25, 50, 75, 100];
+    const analysisStrategies = [];
+    
+    // Pour chaque stratégie existante, créer des versions avec différents ratios
+    existingStrategies.forEach(strategy => {
+      // Le nom de base de la stratégie 
+      const baseName = strategy.name.replace(/\s\d+%$/, ''); // Retirer le % s'il existe déjà
+      
+      // Créer 4 versions avec différents ratios
+      coverageRatios.forEach(ratio => {
+        analysisStrategies.push({
+          name: `${baseName} ${ratio}%`,
+          components: [...strategy.components],
+          coverageRatio: ratio
+        });
+      });
+    });
+    
+    // Définir les stratégies pour la matrice
+    setMatrixStrategies(analysisStrategies);
+    
+    // Générer la matrice avec ces stratégies
+    setTimeout(() => {
+      generateRiskMatrix();
+    }, 100);
+  };
+
+  // Ajouter un état pour suivre si l'affichage est en mode variations
+  const [showCoverageVariations, setShowCoverageVariations] = useState(false);
+
+  // Ajouter la fonction pour réorganiser l'affichage de la matrice
+  const toggleCoverageVariations = () => {
+    if (!riskMatrixResults.length) {
+      alert("Veuillez d'abord générer la matrice de risque");
+      return;
+    }
+    
+    setShowCoverageVariations(!showCoverageVariations);
+  };
+
+  // Modifier l'affichage du tableau de la matrice de risque
+  {riskMatrixResults.length > 0 && (
+    <div className="mt-8 overflow-x-auto">
+      <h3 className="text-lg font-semibold mb-4">Risk Matrix Results</h3>
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            <th className="border p-2">Strategy</th>
+            <th className="border p-2">Coverage Ratio</th>
+            <th className="border p-2">Hedging Cost (k$)</th>
+            {priceRanges.map((range, i) => (
+              <th key={i} className="border p-2">{range.probability}%<br/>[{range.min},{range.max}]</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {showCoverageVariations 
+            ? riskMatrixResults.flatMap((result, i) => {
+                const strategyName = result.name.replace(/\s\d+%$/, '');
+                const ratios = [25, 50, 75, 100];
+                
+                return ratios.map((ratio) => (
+                  <tr key={`${i}-${ratio}`}>
+                    <td className="border p-2">{strategyName}</td>
+                    <td className="border p-2">{ratio}%</td>
+                    <td className="border p-2">{((result.hedgingCost / result.coverageRatio) * ratio / 1000).toFixed(1)}</td>
+                    
+                    {priceRanges.map((range, j) => {
+                      const rangeKey = `${range.min},${range.max}`;
+                      // Ajuster la valeur en fonction du ratio
+                      const adjustedValue = (result.differences[rangeKey] / result.coverageRatio) * ratio;
+                      
+                      return (
+                        <td 
+                          key={j} 
+                          className="border p-2"
+                          style={{ backgroundColor: getCellColor(adjustedValue) }}
+                        >
+                          {(adjustedValue / 1000).toFixed(1)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ));
+              })
+            : riskMatrixResults.map((result, i) => (
+                <tr key={i}>
+                  <td className="border p-2">{result.name}</td>
+                  <td className="border p-2">{result.coverageRatio}%</td>
+                  <td className="border p-2">{(result.hedgingCost / 1000).toFixed(1)}</td>
+                  
+                  {priceRanges.map((range, j) => {
+                    const rangeKey = `${range.min},${range.max}`;
+                    return (
+                      <td 
+                        key={j} 
+                        className="border p-2"
+                        style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
+                      >
+                        {(result.differences[rangeKey] / 1000).toFixed(1)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))
+          }
+        </tbody>
+      </table>
+    </div>
+  )}
 
   return (
     <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
@@ -2543,11 +2676,18 @@ const Index = () => {
                   Generate Risk Matrix
                 </Button>
                 <Button 
-                  onClick={generateFullRiskAnalysis} 
+                  onClick={toggleCoverageVariations} 
                   className="w-full"
                   variant="outline"
                 >
-                  Full Analysis Risk
+                  {showCoverageVariations ? "Show Original View" : "Show Coverage Variations"}
+                </Button>
+                <Button 
+                  onClick={clearAllStrategies} 
+                  className="w-full"
+                  variant="destructive"
+                >
+                  Clear Strategies
                 </Button>
                 {riskMatrixResults.length > 0 && (
                   <>
@@ -2576,40 +2716,65 @@ const Index = () => {
                   <table className="w-full border-collapse">
                     <thead>
                       <tr>
-                        <th className="border p-2">Stratégie</th>
-                        <th className="border p-2">Ratio de couverture</th>
-                        <th className="border p-2">Coût de la couverture (M$)</th>
+                        <th className="border p-2">Strategy</th>
+                        <th className="border p-2">Coverage Ratio</th>
+                        <th className="border p-2">Hedging Cost (k$)</th>
                         {priceRanges.map((range, i) => (
                           <th key={i} className="border p-2">{range.probability}%<br/>[{range.min},{range.max}]</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {riskMatrixResults.map((result, i) => (
-                        <tr key={i}>
-                          <td className="border p-2">
-                            {result.strategy.map((comp, j) => (
-                              <div key={j}>
-                                {comp.type === 'swap' ? 'Swap' : `${comp.type === 'call' ? 'Call' : 'Put'} ${comp.strike}${comp.strikeType === 'percent' ? '%' : ''}`}
-                              </div>
-                            ))}
-                          </td>
-                          <td className="border p-2">{result.coverageRatio}%</td>
-                          <td className="border p-2">{(result.hedgingCost / 1000000).toFixed(1)}</td>
-                          {priceRanges.map((range, j) => {
-                            const rangeKey = `${range.min},${range.max}`;
-                            return (
-                              <td 
-                                key={j} 
-                                className="border p-2"
-                                style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
-                              >
-                                {(result.differences[rangeKey] / 1000000).toFixed(1)}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
+                      {showCoverageVariations 
+                        ? riskMatrixResults.flatMap((result, i) => {
+                            const strategyName = result.name.replace(/\s\d+%$/, '');
+                            const ratios = [25, 50, 75, 100];
+                            
+                            return ratios.map((ratio) => (
+                              <tr key={`${i}-${ratio}`}>
+                                <td className="border p-2">{strategyName}</td>
+                                <td className="border p-2">{ratio}%</td>
+                                <td className="border p-2">{((result.hedgingCost / result.coverageRatio) * ratio / 1000).toFixed(1)}</td>
+                                
+                                {priceRanges.map((range, j) => {
+                                  const rangeKey = `${range.min},${range.max}`;
+                                  // Ajuster la valeur en fonction du ratio
+                                  const adjustedValue = (result.differences[rangeKey] / result.coverageRatio) * ratio;
+                                  
+                                  return (
+                                    <td 
+                                      key={j} 
+                                      className="border p-2"
+                                      style={{ backgroundColor: getCellColor(adjustedValue) }}
+                                    >
+                                      {(adjustedValue / 1000).toFixed(1)}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ));
+                          })
+                        : riskMatrixResults.map((result, i) => (
+                            <tr key={i}>
+                              <td className="border p-2">{result.name}</td>
+                              <td className="border p-2">{result.coverageRatio}%</td>
+                              <td className="border p-2">{(result.hedgingCost / 1000).toFixed(1)}</td>
+                              
+                              {priceRanges.map((range, j) => {
+                                const rangeKey = `${range.min},${range.max}`;
+                                return (
+                                  <td 
+                                    key={j} 
+                                    className="border p-2"
+                                    style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
+                                  >
+                                    {(result.differences[rangeKey] / 1000).toFixed(1)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))
+                      }
                     </tbody>
                   </table>
                 </div>
