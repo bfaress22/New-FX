@@ -28,11 +28,17 @@ interface StressTestScenario {
 }
 
 interface StrategyComponent {
-  type: 'call' | 'put' | 'swap';
+  type: 'call' | 'put' | 'swap' | 'call-knockout' | 'call-reverse-knockout' | 'call-double-knockout' | 
+         'put-knockout' | 'put-reverse-knockout' | 'put-double-knockout' | 
+         'call-knockin' | 'call-reverse-knockin' | 'call-double-knockin' |
+         'put-knockin' | 'put-reverse-knockin' | 'put-double-knockin';
   strike: number;
   strikeType: 'percent' | 'absolute';
   volatility: number;
   quantity: number;
+  barrier?: number;           // Primary barrier level
+  secondBarrier?: number;     // Secondary barrier for double barriers
+  barrierType?: 'percent' | 'absolute';  // Whether barrier is % of spot or absolute value
 }
 
 interface Result {
@@ -424,11 +430,352 @@ const Index = () => {
     setResults(updatedResults);
   };
 
-  // Calculate Black-Scholes Option Price
-  const calculateOptionPrice = (type, S, K, r, t, sigma, date?) => {
-    // Utiliser le nombre de mois spécifié par l'utilisateur
-    const timeInYears = params.monthsToHedge / 12; // Convertir les mois en années
-    // Utilisez la volatilité implicite si disponible
+  // Add helper function for generating normal random numbers using Box-Muller transform
+  const generateNormal = () => {
+    // Box-Muller transform for more accurate normal distribution
+    const u1 = Math.random();
+    const u2 = Math.random();
+    
+    const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+    return z0;
+  };
+
+  // Add a new function for full-period Monte Carlo path generation
+  const generateMonteCarloPaths = (
+    S: number,      // Spot price
+    r: number,      // Risk-free rate
+    months: Date[], // Array of month-end dates
+    startDate: Date,
+    volatility: number,
+    numPaths: number = 10000
+  ) => {
+    const paths = [];
+    const timeToMaturities = months.map(date => {
+      const diffTime = Math.abs(date.getTime() - startDate.getTime());
+      return diffTime / (365.25 * 24 * 60 * 60 * 1000); // Time in years
+    });
+    
+    // Sort maturities to ensure they're in ascending order
+    const sortedMaturities = [...timeToMaturities].sort((a, b) => a - b);
+    const maxMaturity = sortedMaturities[sortedMaturities.length - 1];
+    
+    // Number of time steps for simulation (daily)
+    const numSteps = Math.max(252 * maxMaturity, 50);
+    const dt = maxMaturity / numSteps;
+    
+    // Generate paths
+    for (let path = 0; path < numPaths; path++) {
+      const pricePath = [S]; // Start with spot price
+      
+      // Generate a complete price path
+      for (let step = 1; step <= numSteps; step++) {
+        const prevPrice = pricePath[step - 1];
+        
+        // Use proper normal distribution with Box-Muller
+        const randomWalk = generateNormal();
+        
+        // GBM formula
+        const nextPrice = prevPrice * Math.exp(
+          (r - 0.5 * Math.pow(volatility, 2)) * dt + 
+          volatility * Math.sqrt(dt) * randomWalk
+        );
+        
+        pricePath.push(nextPrice);
+      }
+      
+      paths.push(pricePath);
+    }
+    
+    return {
+      paths,
+      timeToMaturities,
+      numSteps,
+      dt,
+      maxMaturity,
+      volatility // Store the volatility used
+    };
+  };
+
+  // Add this function for Monte Carlo simulation of barrier options
+  const calculateBarrierOptionPrice = (
+    optionType: string,
+    S: number,      // Current price
+    K: number,      // Strike price
+    r: number,      // Risk-free rate
+    t: number,      // Time to maturity in years
+    sigma: number,  // Volatility
+    barrier: number, // Barrier level
+    secondBarrier?: number, // Second barrier for double barrier options
+    numSimulations: number = 1000 // Number of simulations
+  ) => {
+    // Initialize variables for simulation
+    let payoffSum = 0;
+
+    // Run simulations
+    for (let i = 0; i < numSimulations; i++) {
+      // Number of time steps (e.g., days) in the simulation
+      const numSteps = Math.max(252 * t, 50); // At least 50 steps
+      const dt = t / numSteps;
+      
+      // Start with current price
+      let currentPrice = S;
+      let barrierHit = false;
+      
+      // Simulate price path
+      for (let step = 0; step < numSteps; step++) {
+        // Generate random normal variable using Box-Muller transform
+        const randomWalk = generateNormal();
+        
+        // Update price using geometric Brownian motion
+        currentPrice = currentPrice * Math.exp(
+          (r - 0.5 * Math.pow(sigma, 2)) * dt + 
+          sigma * Math.sqrt(dt) * randomWalk
+        );
+        
+        // Check if barrier is hit - FIXING BARRIER LOGIC for put options
+        const isAboveBarrier = currentPrice >= barrier;
+        const isBelowBarrier = currentPrice <= barrier;
+        const isBelowSecondBarrier = secondBarrier !== undefined && currentPrice <= secondBarrier;
+        
+        // Handle different types of barrier options
+        if (optionType.includes('knockout')) {
+          if (optionType.includes('reverse')) {
+            if (optionType.includes('put')) {
+              // Put Reverse KO: Knocked out if price goes ABOVE barrier
+              if (isAboveBarrier) {
+                barrierHit = true;
+                break;
+              }
+            } else {
+              // Call Reverse KO: Knocked out if price goes BELOW barrier
+              if (isBelowBarrier) {
+                barrierHit = true;
+                break;
+              }
+            }
+          } else if (optionType.includes('double')) {
+            // Double KO: Knocked out if price crosses either barrier
+            if (isAboveBarrier || isBelowSecondBarrier) {
+              barrierHit = true;
+              break;
+            }
+          } else {
+            if (optionType.includes('put')) {
+              // Put KO: Knocked out if price goes BELOW barrier
+              if (isBelowBarrier) {
+                barrierHit = true;
+                break;
+              }
+            } else {
+              // Call KO: Knocked out if price goes ABOVE barrier
+              if (isAboveBarrier) {
+                barrierHit = true;
+                break;
+              }
+            }
+          }
+        } else if (optionType.includes('knockin')) {
+          if (optionType.includes('reverse')) {
+            if (optionType.includes('put')) {
+              // Put Reverse KI: Knocked in if price goes ABOVE barrier
+              if (isAboveBarrier) {
+                barrierHit = true;
+              }
+            } else {
+              // Call Reverse KI: Knocked in if price goes BELOW barrier
+              if (isBelowBarrier) {
+                barrierHit = true;
+              }
+            }
+          } else if (optionType.includes('double')) {
+            // Double KI: Knocked in if price crosses either barrier
+            if (isAboveBarrier || isBelowSecondBarrier) {
+              barrierHit = true;
+            }
+          } else {
+            if (optionType.includes('put')) {
+              // Put KI: Knocked in if price goes BELOW barrier
+              if (isBelowBarrier) {
+                barrierHit = true;
+              }
+            } else {
+              // Call KI: Knocked in if price goes ABOVE barrier
+              if (isAboveBarrier) {
+                barrierHit = true;
+              }
+            }
+          }
+        }
+      }
+      
+      // Calculate payoff based on final price and barrier status
+      let payoff = 0;
+      
+      const isCall = optionType.includes('call');
+      const baseOptionPayoff = isCall ? 
+        Math.max(0, currentPrice - K) : 
+        Math.max(0, K - currentPrice);
+      
+      if (optionType.includes('knockout')) {
+        // For knock-out options, payoff is 0 if barrier was hit
+        if (!barrierHit) {
+          payoff = baseOptionPayoff;
+        }
+      } else if (optionType.includes('knockin')) {
+        // For knock-in options, payoff is the base option payoff only if barrier was hit
+        if (barrierHit) {
+          payoff = baseOptionPayoff;
+        }
+      }
+      
+      payoffSum += payoff;
+    }
+    
+    // Average payoff discounted back to present value
+    const optionPrice = (payoffSum / numSimulations) * Math.exp(-r * t);
+    return optionPrice;
+  };
+
+  // Add function to calculate barrier option prices using the generated paths
+  const calculateBarrierOptionPriceFromPaths = (
+    optionType: string,
+    S: number,       // Current price
+    K: number,       // Strike price
+    r: number,       // Risk-free rate
+    t: number,       // Time to maturity in years
+    barrier: number, // Barrier level
+    secondBarrier?: number, // Second barrier for double barrier options
+    monteCarloData?: any   // Pre-generated Monte Carlo data
+  ) => {
+    if (!monteCarloData || !monteCarloData.paths) {
+      // If no pre-generated paths, use the old method
+      return calculateBarrierOptionPrice(
+        optionType, 
+        S, 
+        K, 
+        r, 
+        t, 
+        monteCarloData?.volatility || 0.2, // Use volatility from monteCarloData or default
+        barrier, 
+        secondBarrier
+      );
+    }
+    
+    const { paths, dt } = monteCarloData;
+    
+    // Find closest maturity time point
+    const maturityIndex = Math.round(t / dt);
+    let payoffSum = 0;
+    
+    // Calculate option payoff for each path
+    for (let pathIdx = 0; pathIdx < paths.length; pathIdx++) {
+      const path = paths[pathIdx];
+      let barrierHit = false;
+      
+      // Check barrier events along the path up to maturity
+      for (let step = 0; step <= maturityIndex; step++) {
+        if (step >= path.length) break; // Safety check
+        
+        const currentPrice = path[step];
+        
+        // Check if barrier is hit - similar logic as in original function
+        const isAboveBarrier = currentPrice >= barrier;
+        const isBelowBarrier = currentPrice <= barrier;
+        const isBelowSecondBarrier = secondBarrier !== undefined && currentPrice <= secondBarrier;
+        
+        // Apply barrier logic (same as calculateBarrierOptionPrice)
+        if (optionType.includes('knockout')) {
+          if (optionType.includes('reverse')) {
+            if (optionType.includes('put')) {
+              if (isAboveBarrier) {
+                barrierHit = true;
+                break;
+              }
+            } else {
+              if (isBelowBarrier) {
+                barrierHit = true;
+                break;
+              }
+            }
+          } else if (optionType.includes('double')) {
+            if (isAboveBarrier || isBelowSecondBarrier) {
+              barrierHit = true;
+              break;
+            }
+          } else {
+            if (optionType.includes('put')) {
+              if (isBelowBarrier) {
+                barrierHit = true;
+                break;
+              }
+            } else {
+              if (isAboveBarrier) {
+                barrierHit = true;
+                break;
+              }
+            }
+          }
+        } else if (optionType.includes('knockin')) {
+          if (optionType.includes('reverse')) {
+            if (optionType.includes('put')) {
+              if (isAboveBarrier) {
+                barrierHit = true;
+              }
+            } else {
+              if (isBelowBarrier) {
+                barrierHit = true;
+              }
+            }
+          } else if (optionType.includes('double')) {
+            if (isAboveBarrier || isBelowSecondBarrier) {
+              barrierHit = true;
+            }
+          } else {
+            if (optionType.includes('put')) {
+              if (isBelowBarrier) {
+                barrierHit = true;
+              }
+            } else {
+              if (isAboveBarrier) {
+                barrierHit = true;
+              }
+            }
+          }
+        }
+      }
+      
+      // Calculate payoff based on final price and barrier status
+      let payoff = 0;
+      const finalPrice = path[Math.min(maturityIndex, path.length - 1)];
+      
+      const isCall = optionType.includes('call');
+      const baseOptionPayoff = isCall ? 
+        Math.max(0, finalPrice - K) : 
+        Math.max(0, K - finalPrice);
+      
+      if (optionType.includes('knockout')) {
+        // For knock-out options, payoff is 0 if barrier was hit
+        if (!barrierHit) {
+          payoff = baseOptionPayoff;
+        }
+      } else if (optionType.includes('knockin')) {
+        // For knock-in options, payoff is the base option payoff only if barrier was hit
+        if (barrierHit) {
+          payoff = baseOptionPayoff;
+        }
+      }
+      
+      payoffSum += payoff;
+    }
+    
+    // Average payoff discounted back to present value
+    const optionPrice = (payoffSum / paths.length) * Math.exp(-r * t);
+    return optionPrice;
+  };
+
+  // Modify the calculateOptionPrice function to handle barrier options
+  const calculateOptionPrice = (type, S, K, r, t, sigma, date?, monteCarloData?) => {
+    // Utilize the volatility implied if available
     let effectiveSigma = sigma;
     if (date && useImpliedVol) {
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
@@ -437,6 +784,52 @@ const Index = () => {
       }
     }
 
+    // If it's a barrier option, use Monte Carlo simulation
+    if (type.includes('knockout') || type.includes('knockin')) {
+      // Find the option in the strategy to get barrier values
+      const option = strategy.find(opt => opt.type === type);
+      if (!option) return 0;
+
+      // Calculate barrier values
+      const barrier = option.barrierType === 'percent' ? 
+        params.spotPrice * (option.barrier / 100) : 
+        option.barrier;
+        
+      const secondBarrier = option.type.includes('double') ? 
+        (option.barrierType === 'percent' ? 
+          params.spotPrice * (option.secondBarrier / 100) : 
+          option.secondBarrier) : 
+        undefined;
+      
+      // Use pre-generated Monte Carlo paths if available
+      if (monteCarloData && monteCarloData.paths) {
+        return calculateBarrierOptionPriceFromPaths(
+          type,
+          S,
+          K,
+          r,
+          t,
+          barrier,
+          secondBarrier,
+          monteCarloData
+        );
+      }
+      
+      // Otherwise use standard barrier option pricing
+      return calculateBarrierOptionPrice(
+        type,
+        S,
+        K,
+        r,
+        t,
+        effectiveSigma,
+        barrier,
+        secondBarrier,
+        1000 // Number of simulations - adjust for accuracy/performance
+      );
+    }
+    
+    // For standard options, use Black-Scholes
     const d1 = (Math.log(S/K) + (r + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
     const d2 = d1 - effectiveSigma*Math.sqrt(t);
     
@@ -445,7 +838,7 @@ const Index = () => {
     
     if (type === 'call') {
       return S*Nd1 - K*Math.exp(-r*t)*Nd2;
-    } else {
+    } else { // put
       return K*Math.exp(-r*t)*(1-Nd2) - S*(1-Nd1);
     }
   };
@@ -490,7 +883,7 @@ const Index = () => {
     return prices;
   };
 
-  // Calculate Payoff at Maturity
+  // Modify the calculatePayoff function to handle barrier options
   const calculatePayoff = () => {
     if (strategy.length === 0) return;
 
@@ -507,7 +900,7 @@ const Index = () => {
 
         const quantity = option.quantity / 100;
 
-        // Calculate option premium using Black-Scholes
+        // Get the option premium
         const optionPremium = calculateOptionPrice(
           option.type,
           spotPrice,
@@ -515,14 +908,73 @@ const Index = () => {
           params.interestRate/100,
           1, // 1 year to maturity for payoff diagram
           option.volatility/100,
-          new Date() // Ajoutez la date courante
+          new Date()
         );
 
-        if (option.type === 'call') {
-          totalPayoff += (Math.max(price - strike, 0) - optionPremium) * quantity;
+        // Calculate payoff based on option type
+        let payoff = 0;
+        
+        // For barrier options, check if barrier would be hit at this final price
+        if (option.type.includes('knockout') || option.type.includes('knockin')) {
+          const barrier = option.barrierType === 'percent' ? 
+            params.spotPrice * (option.barrier / 100) : 
+            option.barrier;
+          
+          const secondBarrier = option.type.includes('double') ? 
+            (option.barrierType === 'percent' ? 
+              params.spotPrice * (option.secondBarrier / 100) : 
+              option.secondBarrier) : 
+            undefined;
+          
+          // Simplification: For payoff diagram, we'll just check if final price crosses barrier
+          const isAboveBarrier = price >= barrier;
+          const isBelowBarrier = price <= barrier;
+          const crossesSecondBarrier = secondBarrier !== undefined && price <= secondBarrier;
+          
+          // FIX: Correct barrier event logic for put options
+          let barrierEvent = false;
+          
+          if (option.type.includes('reverse')) {
+            if (option.type.includes('put')) {
+              // For Put Reverse KO/KI: Barrier event if price goes ABOVE barrier
+              barrierEvent = isAboveBarrier;
         } else {
-          totalPayoff += (Math.max(strike - price, 0) - optionPremium) * quantity;
+              // For Call Reverse KO/KI: Barrier event if price goes BELOW barrier
+              barrierEvent = isBelowBarrier;
+            }
+          } else if (option.type.includes('double')) {
+            // For Double KO/KI: Barrier event if outside range (above high or below low)
+            barrierEvent = isAboveBarrier || crossesSecondBarrier;
+          } else {
+            if (option.type.includes('put')) {
+              // For standard Put KO/KI: Barrier event if price goes BELOW barrier
+              barrierEvent = isBelowBarrier;
+            } else {
+              // For standard Call KO/KI: Barrier event if price goes ABOVE barrier
+              barrierEvent = isAboveBarrier;
+            }
+          }
+          
+          const isCall = option.type.includes('call');
+          const basePayoff = isCall ? 
+            Math.max(0, price - strike) : 
+            Math.max(0, strike - price);
+          
+          if (option.type.includes('knockout')) {
+            // For knockout, payoff is zero if barrier is crossed
+            payoff = barrierEvent ? 0 : basePayoff;
+          } else { // knockin
+            // For knockin, payoff is only non-zero if barrier is crossed
+            payoff = barrierEvent ? basePayoff : 0;
+          }
+        } else if (option.type.includes('call')) {
+          payoff = Math.max(price - strike, 0);
+        } else if (option.type.includes('put')) {
+          payoff = Math.max(strike - price, 0);
         }
+        
+        // Add to total payoff, subtracting premium
+        totalPayoff += (payoff - optionPremium) * quantity;
       });
 
       return {
@@ -541,7 +993,10 @@ const Index = () => {
       strike: 100,
       strikeType: 'percent',
       volatility: 20,
-      quantity: 100
+      quantity: 100,
+      barrier: 120,       // Default barrier at 120% of spot
+      secondBarrier: 80,  // Default second barrier at 80% of spot
+      barrierType: 'percent'
     }]);
   };
 
@@ -596,6 +1051,15 @@ const Index = () => {
 
     const monthlyVolume = params.totalVolume / params.monthsToHedge;
 
+    // Generate Monte Carlo paths for the full period
+    const monteCarloPaths = generateMonteCarloPaths(
+      params.spotPrice,
+      params.interestRate / 100,
+      months,
+      startDate,
+      realPriceParams.volatility
+    );
+
     const detailedResults = months.map((date, i) => {
       // Get forward price
       const forward = (() => {
@@ -632,20 +1096,69 @@ const Index = () => {
           params.spotPrice * (option.strike/100) : 
                 option.strike;
             
+            // Generate a descriptive label based on option type
+            let optionLabel = "";
+            if (option.type === 'call') {
+              optionLabel = `Call Price ${optIndex + 1}`;
+            } else if (option.type === 'put') {
+              optionLabel = `Put Price ${optIndex + 1}`;
+            } else if (option.type === 'swap') {
+              optionLabel = `Swap Price ${optIndex + 1}`;
+            } else if (option.type.includes('knockout')) {
+              // Knockout options
+              if (option.type.includes('call')) {
+                if (option.type.includes('reverse')) {
+                  optionLabel = `Call Rev KO ${optIndex + 1}`;
+                } else if (option.type.includes('double')) {
+                  optionLabel = `Call Dbl KO ${optIndex + 1}`;
+            } else {
+                  optionLabel = `Call KO ${optIndex + 1}`;
+                }
+              } else { // Put options
+                if (option.type.includes('reverse')) {
+                  optionLabel = `Put Rev KO ${optIndex + 1}`;
+                } else if (option.type.includes('double')) {
+                  optionLabel = `Put Dbl KO ${optIndex + 1}`;
+                } else {
+                  optionLabel = `Put KO ${optIndex + 1}`;
+                }
+              }
+            } else if (option.type.includes('knockin')) {
+              // Knockin options
+              if (option.type.includes('call')) {
+                if (option.type.includes('reverse')) {
+                  optionLabel = `Call Rev KI ${optIndex + 1}`;
+                } else if (option.type.includes('double')) {
+                  optionLabel = `Call Dbl KI ${optIndex + 1}`;
+                } else {
+                  optionLabel = `Call KI ${optIndex + 1}`;
+                }
+              } else { // Put options
+                if (option.type.includes('reverse')) {
+                  optionLabel = `Put Rev KI ${optIndex + 1}`;
+                } else if (option.type.includes('double')) {
+                  optionLabel = `Put Dbl KI ${optIndex + 1}`;
+                } else {
+                  optionLabel = `Put KI ${optIndex + 1}`;
+                }
+              }
+            }
+            
             return {
                 type: option.type,
-                price: calculateOptionPrice(
-                    option.type,
-                    forward,
+              price: calculateOptionPrice(
+                option.type,
+                forward,
                     strike,
-            params.interestRate/100,
-            t,
-            option.volatility/100,
-                    date
-                ),
-          quantity: option.quantity/100,
-                strike: strike,
-                label: `${option.type === 'call' ? 'Call' : 'Put'} Price ${optIndex + 1}`
+                params.interestRate/100,
+                t,
+                option.volatility/100,
+                date,
+                monteCarloPaths
+              ),
+              quantity: option.quantity/100,
+              strike: strike,
+              label: optionLabel
             };
         });
 
@@ -655,9 +1168,77 @@ const Index = () => {
 
         // Calculate payoff using real price
         const totalPayoff = optionPrices.reduce((sum, opt) => {
-            const payoff = opt.type === 'call' 
-                ? Math.max(realPrice - opt.strike, 0)
-                : Math.max(opt.strike - realPrice, 0);
+          let payoff = 0;
+          
+          if (opt.type.includes('knockout') || opt.type.includes('knockin')) {
+            // For barrier options, we need to approximate the payoff
+            // This is a simplified approach, for accurate results we should use Monte Carlo here too
+            const barrier = strategy.find(s => s.type === opt.type)?.barrier || 0;
+            const barrierValue = strategy.find(s => s.type === opt.type)?.barrierType === 'percent' ?
+              params.spotPrice * (barrier / 100) : barrier;
+            
+            const secondBarrier = strategy.find(s => s.type === opt.type)?.secondBarrier;
+            const secondBarrierValue = secondBarrier && strategy.find(s => s.type === opt.type)?.barrierType === 'percent' ?
+              params.spotPrice * (secondBarrier / 100) : secondBarrier;
+            
+            const isCall = opt.type.includes('call');
+            const basePayoff = isCall ? 
+              Math.max(realPrice - opt.strike, 0) : 
+              Math.max(opt.strike - realPrice, 0);
+            
+            // Apply barrier logic
+            if (opt.type.includes('knockout')) {
+              if (opt.type.includes('reverse')) {
+                if (opt.type.includes('put')) {
+                  // Put Reverse KO: Price above barrier -> knocked out (0), below -> payoff
+                  payoff = realPrice >= barrierValue ? 0 : basePayoff;
+                } else {
+                  // Call Reverse KO: Price below barrier -> knocked out (0), above -> payoff
+                  payoff = realPrice <= barrierValue ? 0 : basePayoff;
+                }
+              } else if (opt.type.includes('double')) {
+                // Double KO: Outside range -> knocked out (0), inside -> payoff
+                payoff = (realPrice >= barrierValue || (secondBarrierValue && realPrice <= secondBarrierValue)) ? 0 : basePayoff;
+              } else {
+                if (opt.type.includes('put')) {
+                  // Put KO: Price below barrier -> knocked out (0), above -> payoff
+                  payoff = realPrice <= barrierValue ? 0 : basePayoff;
+                } else {
+                  // Call KO: Price above barrier -> knocked out (0), below -> payoff
+                  payoff = realPrice >= barrierValue ? 0 : basePayoff;
+                }
+              }
+            } else if (opt.type.includes('knockin')) {
+              if (opt.type.includes('reverse')) {
+                if (opt.type.includes('put')) {
+                  // Put Reverse KI: Price above barrier -> knocked in (payoff), below -> 0
+                  payoff = realPrice >= barrierValue ? basePayoff : 0;
+                } else {
+                  // Call Reverse KI: Price below barrier -> knocked in (payoff), above -> 0
+                  payoff = realPrice <= barrierValue ? basePayoff : 0;
+                }
+              } else if (opt.type.includes('double')) {
+                // Double KI: Outside range -> knocked in (payoff), inside -> 0
+                payoff = (realPrice >= barrierValue || (secondBarrierValue && realPrice <= secondBarrierValue)) ? basePayoff : 0;
+              } else {
+                if (opt.type.includes('put')) {
+                  // Put KI: Price below barrier -> knocked in (payoff), above -> 0
+                  payoff = realPrice <= barrierValue ? basePayoff : 0;
+                } else {
+                  // Call KI: Price above barrier -> knocked in (payoff), below -> 0
+                  payoff = realPrice >= barrierValue ? basePayoff : 0;
+                }
+              }
+            }
+          } else if (opt.type === 'call') {
+            payoff = Math.max(realPrice - opt.strike, 0);
+          } else if (opt.type === 'put') {
+            payoff = Math.max(opt.strike - realPrice, 0);
+          } else if (opt.type === 'swap') {
+            // Swap payoff is already handled in the hedged cost calculation
+            payoff = 0;
+          }
+          
             return sum + (payoff * opt.quantity);
         }, 0);
 
@@ -1209,68 +1790,98 @@ const Index = () => {
       .split(/[,;\t]/); // Accepte plusieurs délimiteurs
   };
 
-  // Mettre à jour la fonction d'import
-  const importHistoricalData = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  // Ajouter cet état pour suivre le format CSV sélectionné
+  const [csvFormat, setCsvFormat] = useState<'english' | 'french'>('english');
+
+  // Modifier la partie du code qui gère l'importation des données historiques
+  const importHistoricalData = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    
+    input.onchange = (e: any) => {
+      const file = e.target.files[0];
         if (!file) return;
 
         const reader = new FileReader();
         reader.onload = (event) => {
-            const text = event.target?.result as string;
-            const rows = text.split('\n').filter(row => row.trim());
+        try {
+          const csv = event.target?.result as string;
+          const lines = csv.split('\n');
+          
+          const newData: HistoricalDataPoint[] = [];
+          
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
             
-            const data: HistoricalDataPoint[] = rows
-                .map(row => {
-                    try {
-            // Nettoyer la ligne des guillemets et diviser par virgule
-            const columns = row.replace(/"/g, '').split(',');
+            // Diviser par virgule ou point-virgule, en tenant compte des guillemets
+            const parts = line.split(',').map(part => part.replace(/"/g, '').trim());
             
-            if (columns.length < 2) return null;
+            if (parts.length < 2) continue;
             
-            // Parse la date (format DD/MM/YYYY)
-            const [day, month, year] = columns[0].split('/');
-                        const date = new Date(`${year}-${month}-${day}`);
-                        
-                        if (isNaN(date.getTime())) {
-              console.error('Invalid date:', columns[0]);
-              return null;
+            let dateStr = parts[0];
+            let priceStr = parts[1];
+            
+            // Traiter le format de date selon le format sélectionné
+            let date;
+            if (csvFormat === 'french') {
+              // Format français DD/MM/YYYY
+              const [day, month, year] = dateStr.split('/');
+              date = new Date(Number(year), Number(month) - 1, Number(day));
+            } else {
+              // Format anglais MM/DD/YYYY
+              const [month, day, year] = dateStr.split('/');
+              date = new Date(Number(year), Number(month) - 1, Number(day));
             }
-
-            // Parse le prix (deuxième colonne)
-            // Nettoyer le prix des espaces et points de mille
-            const priceStr = columns[1]
-              .replace(/\s/g, '')        // Enlever les espaces
-              .replace(/\./g, '')        // Enlever les points de mille
-              .replace(',', '.');        // Remplacer la virgule décimale par un point
             
-                        const price = Number(priceStr);
-
-                        if (isNaN(price)) {
-              console.error('Invalid price:', columns[1]);
-              return null;
-                        }
-
-                        return {
+            // Traiter le format de prix selon le format sélectionné
+            let price;
+            if (csvFormat === 'french') {
+              // Format français:
+              // - Espace ou point comme séparateur de milliers
+              // - Virgule comme séparateur décimal
+              priceStr = priceStr
+                .replace(/\s/g, '') // Supprimer les espaces (séparateurs de milliers)
+                .replace(/\./g, '') // Supprimer les points (séparateurs de milliers alternatifs)
+                .replace(',', '.'); // Remplacer la virgule par un point pour la conversion
+              price = parseFloat(priceStr);
+            } else {
+              // Format anglais:
+              // - Virgule comme séparateur de milliers
+              // - Point comme séparateur décimal
+              priceStr = priceStr.replace(/,/g, ''); // Supprimer les virgules (séparateurs de milliers)
+              price = parseFloat(priceStr);
+            }
+            
+            if (!isNaN(date.getTime()) && !isNaN(price)) {
+              newData.push({
                             date: date.toISOString().split('T')[0],
-                            price: price
-                        };
-                    } catch (error) {
-                        console.error('Error parsing row:', row, error);
-                        return null;
-                    }
-                })
-                .filter(row => row !== null) as HistoricalDataPoint[];
-
-            if (data.length > 0) {
-        // Trier par date décroissante (plus récent en premier)
-        const sortedData = data.sort((a, b) => b.date.localeCompare(a.date));
+                price
+              });
+            }
+          }
+          
+          if (newData.length > 0) {
+            // Trier les données par date
+            const sortedData = newData.sort((a, b) => a.date.localeCompare(b.date));
         setHistoricalData(sortedData);
         calculateMonthlyStats(sortedData);
+            console.log("Imported data:", sortedData); // Pour le débogage
             } else {
-                alert('No valid data found in CSV file. Please check the format.');
-            }
-        };
+            alert('No valid data found in the CSV file. Please make sure to select the correct format (French/English).');
+          }
+          
+        } catch (error) {
+          console.error('Error parsing CSV:', error);
+          alert('Error parsing the CSV file. Please check the format.');
+        }
+      };
+      
         reader.readAsText(file);
+    };
+    
+    input.click();
     };
 
   // Ajouter cette fonction pour mettre à jour les prix réels et les IV après le calcul des stats mensuelles
@@ -2183,6 +2794,18 @@ const Index = () => {
                         <option value="call">Call</option>
                         <option value="put">Put</option>
                         <option value="swap">Swap</option>
+                        <option value="call-knockout">Call Knock-Out</option>
+                        <option value="call-reverse-knockout">Call Reverse Knock-Out</option>
+                        <option value="call-double-knockout">Call Double Knock-Out</option>
+                        <option value="put-knockout">Put Knock-Out</option>
+                        <option value="put-reverse-knockout">Put Reverse Knock-Out</option>
+                        <option value="put-double-knockout">Put Double Knock-Out</option>
+                        <option value="call-knockin">Call Knock-In</option>
+                        <option value="call-reverse-knockin">Call Reverse Knock-In</option>
+                        <option value="call-double-knockin">Call Double Knock-In</option>
+                        <option value="put-knockin">Put Knock-In</option>
+                        <option value="put-reverse-knockin">Put Reverse Knock-In</option>
+                        <option value="put-double-knockin">Put Double Knock-In</option>
                       </select>
                     </div>
                     {component.type === 'swap' ? (
@@ -2228,6 +2851,44 @@ const Index = () => {
                         <option value="absolute">Absolute</option>
                       </select>
                     </div>
+                    
+                    {/* Add barrier inputs for barrier option types */}
+                    {component.type.includes('knockout') || component.type.includes('knockin') ? (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Barrier</label>
+                          <Input
+                            type="number"
+                            value={component.barrier || 0}
+                            onChange={(e) => updateOption(index, 'barrier', Number(e.target.value))}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Barrier Type</label>
+                          <select
+                            className="w-full p-2 border rounded"
+                            value={component.barrierType || 'percent'}
+                            onChange={(e) => updateOption(index, 'barrierType', e.target.value)}
+                          >
+                            <option value="percent">Percentage</option>
+                            <option value="absolute">Absolute</option>
+                          </select>
+                        </div>
+                        
+                        {/* For double barrier options */}
+                        {component.type.includes('double') && (
+                          <div>
+                            <label className="block text-sm font-medium mb-1">Second Barrier</label>
+                            <Input
+                              type="number"
+                              value={component.secondBarrier || 0}
+                              onChange={(e) => updateOption(index, 'secondBarrier', Number(e.target.value))}
+                            />
+                          </div>
+                        )}
+                      </>
+                    ) : null}
+                    
                     <div>
                       <label className="block text-sm font-medium mb-1">Volatility (%)</label>
                       <Input
@@ -2299,6 +2960,18 @@ const Index = () => {
                         <option value="call">Call</option>
                         <option value="put">Put</option>
                         <option value="swap">Swap</option>
+                        <option value="call-knockout">Call Knock-Out</option>
+                        <option value="call-reverse-knockout">Call Reverse Knock-Out</option>
+                        <option value="call-double-knockout">Call Double Knock-Out</option>
+                        <option value="put-knockout">Put Knock-Out</option>
+                        <option value="put-reverse-knockout">Put Reverse Knock-Out</option>
+                        <option value="put-double-knockout">Put Double Knock-Out</option>
+                        <option value="call-knockin">Call Knock-In</option>
+                        <option value="call-reverse-knockin">Call Reverse Knock-In</option>
+                        <option value="call-double-knockin">Call Double Knock-In</option>
+                        <option value="put-knockin">Put Knock-In</option>
+                        <option value="put-reverse-knockin">Put Reverse Knock-In</option>
+                        <option value="put-double-knockin">Put Double Knock-In</option>
                       </select>
                     </div>
                     <div>
@@ -2484,15 +3157,21 @@ const Index = () => {
                 <Button onClick={addHistoricalDataRow}>
                   <Plus className="w-4 h-4 mr-2" /> Add Row
                     </Button>
-                <Button variant="default" className="relative">
-                  <input
-                    type="file"
-                    accept=".csv"
-                    onChange={importHistoricalData}
-                    className="absolute inset-0 opacity-0 cursor-pointer"
-                  />
+                <div className="flex flex-col sm:flex-row gap-2 items-center">
+                  <Select value={csvFormat} onValueChange={(value) => setCsvFormat(value as 'english' | 'french')}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="CSV Format" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="english">English (Point .)</SelectItem>
+                      <SelectItem value="french">French (Comma ,)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Button onClick={importHistoricalData} className="flex-grow sm:flex-grow-0">
                   Import Historical Data
                     </Button>
+                </div>
                 <Button variant="destructive" onClick={clearHistoricalData}>
                   Clear Data
                     </Button>
@@ -2748,7 +3427,7 @@ const Index = () => {
                                       style={{ backgroundColor: getCellColor(adjustedValue) }}
                                     >
                                       {(adjustedValue / 1000).toFixed(1)}
-                                    </td>
+                          </td>
                                   );
                                 })}
                               </tr>
@@ -2757,22 +3436,22 @@ const Index = () => {
                         : riskMatrixResults.map((result, i) => (
                             <tr key={i}>
                               <td className="border p-2">{result.name}</td>
-                              <td className="border p-2">{result.coverageRatio}%</td>
+                          <td className="border p-2">{result.coverageRatio}%</td>
                               <td className="border p-2">{(result.hedgingCost / 1000).toFixed(1)}</td>
                               
-                              {priceRanges.map((range, j) => {
-                                const rangeKey = `${range.min},${range.max}`;
-                                return (
-                                  <td 
-                                    key={j} 
-                                    className="border p-2"
-                                    style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
-                                  >
-                                    {(result.differences[rangeKey] / 1000).toFixed(1)}
-                                  </td>
-                                );
-                              })}
-                            </tr>
+                          {priceRanges.map((range, j) => {
+                            const rangeKey = `${range.min},${range.max}`;
+                            return (
+                              <td 
+                                key={j} 
+                                className="border p-2"
+                                style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
+                              >
+                                {(result.differences[rangeKey] / 1000).toFixed(1)}
+                              </td>
+                            );
+                          })}
+                        </tr>
                           ))
                       }
                     </tbody>
@@ -2802,15 +3481,8 @@ const Index = () => {
                       {useImpliedVol && (
                         <th className="border p-2 bg-yellow-50">IV (%)</th>
                       )}
-                      {/* Afficher d'abord les colonnes de swap */}
-                      {strategy.filter(s => s.type === 'swap').map((_, i) => (
-                        <th key={`swap-${i}`} className="border p-2">Swap Price {i + 1}</th>
-                      ))}
-                      {/* Puis afficher les colonnes d'options */}
-                      {strategy.filter(s => s.type !== 'swap').map((opt, i) => (
-                        <th key={`option-${i}`} className="border p-2">
-                          {opt.type === 'call' ? 'Call' : 'Put'} Price {i + 1}
-                        </th>
+                      {results[0].optionPrices.map((opt, i) => (
+                        <th key={`opt-header-${i}`} className="border p-2">{opt.label}</th>
                       ))}
                       <th className="border p-2">Strategy Price</th>
                       <th className="border p-2">Strategy Payoff</th>
