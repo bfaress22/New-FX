@@ -1158,10 +1158,9 @@ const Index = () => {
         const optionId = `${option.type}-${optIndex}`;
         const isKnockedOut = option.type.includes('knockout') && barrierCrossings[optionId] && barrierCrossings[optionId][i];
         
-        if (isKnockedOut) {
-          // Si l'option est knocked out, son prix est 0
-          price = 0;
-        } else if (option.type === 'call' || option.type === 'put') {
+        // Pour les options knockout, nous calculons toujours le prix même si l'option est knocked out
+        // Le prix représente la valeur théorique de l'option, indépendamment de son état knocked out
+        if (option.type === 'call' || option.type === 'put') {
           // Use existing Black-Scholes for vanilla options
           const effectiveSigma = useImpliedVol && impliedVolatilities[monthKey] ? 
             impliedVolatilities[monthKey] / 100 : 
