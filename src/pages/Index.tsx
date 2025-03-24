@@ -1298,8 +1298,22 @@ const Index = () => {
         return sum + (payoff * opt.quantity);
       }, 0);
 
-      // Calculating the difference between Delta hedged and unhedged costs
-      const deltaPnL = (forward - realPrice) * monthlyVolume;
+      // Calculer le pourcentage total de swaps dans la stratégie
+      const totalSwapPercentage = swaps.reduce((sum, swap) => sum + swap.quantity, 0) / 100;
+      
+      // Calculer le prix couvert (hedged price) en tenant compte des swaps et du prix réel
+      const hedgedPrice = totalSwapPercentage * swapPrice + (1 - totalSwapPercentage) * realPrice;
+      
+      // Calculer le coût hedgé selon la formule d'origine
+      const hedgedCost = -(monthlyVolume * hedgedPrice) - 
+          (monthlyVolume * (1 - totalSwapPercentage) * strategyPrice) + 
+          (monthlyVolume * (1 - totalSwapPercentage) * totalPayoff);
+      
+      // Calculer le coût non hedgé selon la formule d'origine
+      const unhedgedCost = -(monthlyVolume * realPrice);
+      
+      // Calculer le Delta P&L selon la formule d'origine
+      const deltaPnL = hedgedCost - unhedgedCost;
 
       return {
         date: date.toISOString().split('T')[0],
@@ -1310,8 +1324,8 @@ const Index = () => {
         strategyPrice: strategyPrice,
         totalPayoff: totalPayoff,
         monthlyVolume: monthlyVolume,
-        hedgedCost: (strategyPrice + totalPayoff) * monthlyVolume,
-        unhedgedCost: (forward - realPrice) * monthlyVolume,
+        hedgedCost: hedgedCost,
+        unhedgedCost: unhedgedCost,
         deltaPnL: deltaPnL
       };
     });
@@ -1418,7 +1432,8 @@ const Index = () => {
       deltaPnL: number;
       strategyPremium: number; // Added this property
     }>, row) => {
-      const year = row.date.split(' ')[1];
+      // Corriger l'extraction de l'année - les dates sont maintenant au format ISO (YYYY-MM-DD)
+      const year = row.date.split('-')[0];
       if (!acc[year]) {
         acc[year] = {
           hedgedCost: 0,
