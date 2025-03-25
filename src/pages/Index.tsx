@@ -347,8 +347,22 @@ const Index = () => {
   };
 
   // Add these new states
-  const [useImpliedVol, setUseImpliedVol] = useState(false);
-  const [impliedVolatilities, setImpliedVolatilities] = useState<ImpliedVolatility>({});
+  const [useImpliedVol, setUseImpliedVol] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).useImpliedVol : false;
+  });
+  
+  const [impliedVolatilities, setImpliedVolatilities] = useState<ImpliedVolatility>(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).impliedVolatilities || {} : {};
+  });
+  
+  const [numMonteCarloSimulations, setNumMonteCarloSimulations] = useState<number>(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState && JSON.parse(savedState).numMonteCarloSimulations 
+      ? JSON.parse(savedState).numMonteCarloSimulations 
+      : 1000;
+  });
 
   // Historical data and monthly stats
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
@@ -372,13 +386,13 @@ const Index = () => {
   const [riskMatrixResults, setRiskMatrixResults] = useState<RiskMatrixResult[]>([]);
 
   // Ajouter cet état
+  const [customVolumes, setCustomVolumes] = useState<Record<string, number>>({});
+
+  // Ajouter un état pour stocker les volumes personnalisés par mois
   const [savedRiskMatrices, setSavedRiskMatrices] = useState<SavedRiskMatrix[]>(() => {
     const saved = localStorage.getItem('savedRiskMatrices');
     return saved ? JSON.parse(saved) : [];
   });
-
-  // Ajouter un état pour stocker les volumes personnalisés par mois
-  const [customVolumes, setCustomVolumes] = useState<Record<string, number>>({});
 
   // Ajouter une fonction pour gérer les changements de volume
   const handleVolumeChange = (monthKey: string, newVolume: number) => {
@@ -519,7 +533,7 @@ const Index = () => {
         effectiveSigma,
         barrier,
         secondBarrier,
-        1000 // Number of simulations - adjust for accuracy/performance
+        numMonteCarloSimulations // Utiliser le nombre de simulations défini par l'utilisateur
       );
     }
     
@@ -761,7 +775,7 @@ const Index = () => {
     
     // Generate Monte Carlo paths for 1 year (standard for payoff diagrams)
     const numSteps = 252; // Daily steps for a year
-    const numSimulations = 500; // Fewer simulations for the payoff diagram
+    const numSimulations = numMonteCarloSimulations; // Utiliser le nombre défini par l'utilisateur
     const paths = [];
     
     for (let i = 0; i < numSimulations; i++) {
@@ -991,7 +1005,7 @@ const Index = () => {
     }
 
     // Generate price paths for the entire period
-    const { paths, monthlyIndices } = generatePricePathsForPeriod(months, startDate, 1000);
+    const { paths, monthlyIndices } = generatePricePathsForPeriod(months, startDate, numMonteCarloSimulations);
 
     // If simulation is enabled, generate new real prices using the first path
     if (realPriceParams.useSimulation) {
@@ -2906,6 +2920,40 @@ const Index = () => {
     </div>
   )}
 
+  // Save calculator state when it changes
+  useEffect(() => {
+    const calculatorState = {
+      params,
+      strategy,
+      results,
+      payoffData,
+      manualForwards,
+      realPrices,
+      realPriceParams,
+      activeTab,
+      customScenario,
+      stressTestScenarios,
+      useImpliedVol,
+      impliedVolatilities,
+      numMonteCarloSimulations
+    };
+    localStorage.setItem('calculatorState', JSON.stringify(calculatorState));
+  }, [
+    params, 
+    strategy, 
+    results, 
+    payoffData, 
+    manualForwards, 
+    realPrices, 
+    realPriceParams, 
+    activeTab, 
+    customScenario, 
+    stressTestScenarios, 
+    useImpliedVol,
+    impliedVolatilities,
+    numMonteCarloSimulations
+  ]);
+
   return (
     <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
       <style type="text/css" media="print">
@@ -3020,7 +3068,23 @@ const Index = () => {
                     className="mr-2"
                   />
                   <label>Use Monthly Implied Volatility</label>
-                    </div>
+                </div>
+                
+                <div className="grid grid-cols-1 gap-4 mb-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Monte Carlo Simulations</label>
+                    <Input
+                      type="number"
+                      value={numMonteCarloSimulations}
+                      onChange={(e) => setNumMonteCarloSimulations(Math.max(1, Number(e.target.value)))}
+                      min="1"
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Number of simulations for barrier options. A higher value improves accuracy but slows down the calculation.
+                    </p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
