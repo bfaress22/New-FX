@@ -665,7 +665,9 @@ const Index = () => {
               }
             } else if (optionType.includes('double')) {
               // Double KO: Knocked out if price crosses either barrier
-              if (isAboveBarrier || isBelowSecondBarrier) {
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              if (pathPrice >= upperBarrier || pathPrice <= lowerBarrier) {
                 barrierHit = true;
                 break;
               }
@@ -699,7 +701,9 @@ const Index = () => {
               }
             } else if (optionType.includes('double')) {
               // Double KI: Knocked in if price crosses either barrier
-              if (isAboveBarrier || isBelowSecondBarrier) {
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              if (pathPrice >= upperBarrier || pathPrice <= lowerBarrier) {
                 barrierHit = true;
               }
             } else {
@@ -871,7 +875,9 @@ const Index = () => {
             }
           } else if (option.type.includes('double')) {
               // Double KO: Knocked out si le prix est en dehors des deux barrières
-              isBarrierBroken = price >= barrier || (secondBarrier && price <= secondBarrier);
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
           } else {
             if (option.type.includes('put')) {
                 // Put Standard KO: Knocked out si le prix est en-dessous de la barrière
@@ -892,7 +898,9 @@ const Index = () => {
               }
             } else if (option.type.includes('double')) {
               // Double KI: Knocked in si le prix est en dehors des deux barrières
-              isBarrierBroken = price >= barrier || (secondBarrier && price <= secondBarrier);
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
             } else {
               if (option.type.includes('put')) {
                 // Put Standard KI: Knocked in si le prix est en-dessous de la barrière
@@ -1048,7 +1056,9 @@ const Index = () => {
               }
             } else if (option.type.includes('double')) {
               // Double KO: Knocked out si prix en dehors des deux barrières
-              barrierCrossed = realPrice >= barrier || (secondBarrier && realPrice <= secondBarrier);
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              barrierCrossed = realPrice >= upperBarrier || realPrice <= lowerBarrier;
             } else {
               if (option.type.includes('put')) {
                 // Put Standard KO: Knocked out si prix en-dessous de la barrière
@@ -1104,7 +1114,9 @@ const Index = () => {
               }
             } else if (option.type.includes('double')) {
               // Double KI: Knocked in si prix en dehors des deux barrières
-              barrierHit = realPrice >= barrier || (secondBarrier && realPrice <= secondBarrier);
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              barrierHit = realPrice >= upperBarrier || realPrice <= lowerBarrier;
             } else {
               if (option.type.includes('put')) {
                 // Put Standard KI: Knocked in si prix en-dessous de la barrière
@@ -1289,8 +1301,8 @@ const Index = () => {
 
         // Calculate payoff using real price
       const totalPayoff = allOptionPrices.reduce((sum, opt) => {
-        let payoff = 0;
-        
+          let payoff = 0;
+          
         // Chercher l'index de l'option dans la stratégie
         const optIndex = strategy.findIndex(s => s.type === opt.type && s.strike === opt.strike * (opt.strikeType === 'percent' ? 100 : 1));
         const optionId = `${opt.type}-${optIndex}`;
@@ -1305,8 +1317,8 @@ const Index = () => {
           payoff = 0;
         } else if (opt.type.includes('knockin')) {
           // Pour les options knock-in, utiliser l'état stocké
-          const isCall = opt.type.includes('call');
-          const basePayoff = isCall ? 
+            const isCall = opt.type.includes('call');
+            const basePayoff = isCall ? 
             Math.max(0, realPrice - opt.strike) : 
             Math.max(0, opt.strike - realPrice);
           
@@ -1330,18 +1342,18 @@ const Index = () => {
           // Vérifier si le prix actuel franchirait la barrière
           let barrierHit = false;
           
-          if (opt.type.includes('reverse')) {
-            if (opt.type.includes('put')) {
+              if (opt.type.includes('reverse')) {
+                if (opt.type.includes('put')) {
               barrierHit = realPrice >= barrier; // Reverse Put: hit if above
-            } else {
+                } else {
               barrierHit = realPrice <= barrier; // Reverse Call: hit if below
-            }
-          } else if (opt.type.includes('double')) {
+                }
+              } else if (opt.type.includes('double')) {
             barrierHit = realPrice >= barrier || (secondBarrier && realPrice <= secondBarrier);
-          } else {
-            if (opt.type.includes('put')) {
+              } else {
+                if (opt.type.includes('put')) {
               barrierHit = realPrice <= barrier; // Put: hit if below
-            } else {
+                } else {
               barrierHit = realPrice >= barrier; // Call: hit if above
             }
           }
@@ -1353,17 +1365,17 @@ const Index = () => {
           
           if (opt.type.includes('knockout')) {
             payoff = barrierHit ? 0 : basePayoff;
-          }
-        } else if (opt.type === 'call') {
+            }
+          } else if (opt.type === 'call') {
           payoff = Math.max(0, realPrice - opt.strike);
-        } else if (opt.type === 'put') {
+          } else if (opt.type === 'put') {
           payoff = Math.max(0, opt.strike - realPrice);
-        } else if (opt.type === 'swap') {
+          } else if (opt.type === 'swap') {
           payoff = forward - realPrice;
-        }
-        
-        return sum + (payoff * opt.quantity);
-      }, 0);
+          }
+          
+            return sum + (payoff * opt.quantity);
+        }, 0);
 
       // Calculer le pourcentage total de swaps dans la stratégie
         const totalSwapPercentage = swaps.reduce((sum, swap) => sum + swap.quantity, 0) / 100;
@@ -2138,26 +2150,61 @@ const Index = () => {
 
   // Modifier la fonction addCurrentStrategyToMatrix
   const addCurrentStrategyToMatrix = () => {
-    // Vérifier si la stratégie existe déjà
-    const strategyName = strategy.map(comp => 
-      `${comp.type} ${comp.strike}${comp.strikeType === 'percent' ? '%' : ''}`
-    ).join(' + ');
-    
-    const existingStrategyIndex = matrixStrategies.findIndex(s => 
-      s.name === strategyName && s.coverageRatio === params.coverageRatio
-    );
-    
-    if (existingStrategyIndex !== -1) {
-      alert("Cette stratégie existe déjà dans la matrice de risque.");
+    if (strategy.length === 0) {
+      alert("Veuillez d'abord créer une stratégie");
       return;
     }
     
-    // Ajouter la nouvelle stratégie sans effacer les existantes
-    setMatrixStrategies(prev => [
-      ...prev,
+    // Créer une copie profonde de la stratégie actuelle avec toutes les propriétés
+    const strategyCopy = strategy.map(opt => ({
+      ...opt,
+      // S'assurer que les propriétés spécifiques des options à barrière sont incluses
+      barrier: opt.barrier,
+      secondBarrier: opt.secondBarrier,
+      barrierType: opt.barrierType || 'percent'
+    }));
+    
+    // Créer un nom basé sur les composants
+    const strategyName = strategyCopy.map(comp => {
+      if (comp.type === 'swap') return 'Swap';
+      
+      // Traitement des options à barrière
+      if (comp.type.includes('knockout') || comp.type.includes('knockin')) {
+        let optionName = "";
+        
+        // Déterminer le type de base (call/put)
+        if (comp.type.includes('call')) {
+          optionName = "Call";
+        } else {
+          optionName = "Put";
+        }
+        
+        // Ajouter le type de barrière
+        if (comp.type.includes('double')) {
+          optionName += " Dbl";
+        } else if (comp.type.includes('reverse')) {
+          optionName += " Rev";
+        }
+        
+        // Ajouter le mécanisme de barrière
+        if (comp.type.includes('knockout')) {
+          optionName += " KO";
+        } else { // knockin
+          optionName += " KI";
+        }
+        
+        return optionName;
+      }
+      
+      // Options standards
+      return `${comp.type === 'call' ? 'Call' : 'Put'} Option`;
+    }).join('/');
+    
+    setMatrixStrategies([
+      ...matrixStrategies,
       {
-        components: [...strategy],
-        coverageRatio: params.coverageRatio,
+        components: strategyCopy,
+        coverageRatio: 25, // Par défaut 25%
         name: strategyName
       }
     ]);
@@ -2213,20 +2260,8 @@ const Index = () => {
           // Utiliser les strategyPrice existants des résultats
           const strategyPrice = results[Math.min(i, results.length-1)].strategyPrice;
           
-          // Calculer le payoff pour ce prix médian
-          const totalPayoff = strategyConfig.components.reduce((sum, comp) => {
-            const strike = comp.strikeType === 'percent' 
-              ? params.spotPrice * (comp.strike / 100) 
-              : comp.strike;
-            
-            if (comp.type === 'call') {
-              return sum + Math.max(0, midPrice - strike) * (comp.quantity/100);
-            } else if (comp.type === 'put') {
-              return sum + Math.max(0, strike - midPrice) * (comp.quantity/100);
-            } else { // swap
-              return sum + (midPrice - strike) * (comp.quantity/100);
-            }
-          }, 0);
+          // Calculer le payoff pour ce prix médian en utilisant la fonction dédiée
+          const totalPayoff = calculateStrategyPayoffAtPrice(strategyConfig.components, midPrice);
 
           // Calculer les coûts pour ce mois
           const unhedgedCost = -(monthlyVolume * midPrice);
@@ -2259,16 +2294,55 @@ const Index = () => {
   const addMatrixStrategy = () => {
     if (strategy.length === 0) return;
     
+    // Créer une copie profonde de la stratégie actuelle avec toutes les propriétés
+    const strategyCopy = strategy.map(opt => ({
+      ...opt,
+      // S'assurer que les propriétés spécifiques des options à barrière sont incluses
+      barrier: opt.barrier,
+      secondBarrier: opt.secondBarrier,
+      barrierType: opt.barrierType || 'percent'
+    }));
+    
     // Créer un nom basé sur les composants
-    const strategyName = strategy.map(comp => {
+    const strategyName = strategyCopy.map(comp => {
       if (comp.type === 'swap') return 'Swap';
+      
+      // Traitement des options à barrière
+      if (comp.type.includes('knockout') || comp.type.includes('knockin')) {
+        let optionName = "";
+        
+        // Déterminer le type de base (call/put)
+        if (comp.type.includes('call')) {
+          optionName = "Call";
+        } else {
+          optionName = "Put";
+        }
+        
+        // Ajouter le type de barrière
+        if (comp.type.includes('double')) {
+          optionName += " Dbl";
+        } else if (comp.type.includes('reverse')) {
+          optionName += " Rev";
+        }
+        
+        // Ajouter le mécanisme de barrière
+        if (comp.type.includes('knockout')) {
+          optionName += " KO";
+        } else { // knockin
+          optionName += " KI";
+        }
+        
+        return optionName;
+      }
+      
+      // Options standards
       return `${comp.type === 'call' ? 'Call' : 'Put'} Option`;
     }).join('/');
     
     setMatrixStrategies([
       ...matrixStrategies,
       {
-        components: [...strategy],
+        components: strategyCopy,
         coverageRatio: 25, // Par défaut 25%
         name: strategyName
       }
@@ -2311,14 +2385,75 @@ const Index = () => {
         ? params.spotPrice * (comp.strike / 100) 
         : comp.strike;
       
+      let payoff = 0;
+      
       if (comp.type === 'swap') {
-        // Correction du payoff de swap
-        totalPayoff += (price - strike) * comp.quantity;
+        // Pour les swaps, le payoff est la différence entre le prix et le strike
+        payoff = (price - strike);
+      } else if (comp.type.includes('knockout') || comp.type.includes('knockin')) {
+        // Traitement des options à barrière
+        const barrier = comp.barrierType === 'percent' 
+          ? params.spotPrice * (comp.barrier / 100) 
+          : comp.barrier;
+        
+        const secondBarrier = comp.type.includes('double') 
+          ? (comp.barrierType === 'percent' 
+            ? params.spotPrice * (comp.secondBarrier / 100) 
+            : comp.secondBarrier) 
+          : undefined;
+          
+        // Déterminer si la barrière est franchie
+        let isBarrierBroken = false;
+        
+        if (comp.type.includes('double')) {
+          // Options à double barrière
+          const upperBarrier = Math.max(barrier, secondBarrier || 0);
+          const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+          isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
+        } else if (comp.type.includes('reverse')) {
+          // Options à barrière inversée
+          if (comp.type.includes('put')) {
+            // Put Reverse: barrière franchie si le prix est au-dessus
+            isBarrierBroken = price >= barrier;
+          } else {
+            // Call Reverse: barrière franchie si le prix est en-dessous
+            isBarrierBroken = price <= barrier;
+          }
+        } else {
+          // Options à barrière standard
+          if (comp.type.includes('put')) {
+            // Put: barrière franchie si le prix est en-dessous
+            isBarrierBroken = price <= barrier;
+          } else {
+            // Call: barrière franchie si le prix est au-dessus
+            isBarrierBroken = price >= barrier;
+          }
+        }
+        
+        // Calculer le payoff de base
+        const isCall = comp.type.includes('call');
+        const basePayoff = isCall 
+          ? Math.max(0, price - strike) 
+          : Math.max(0, strike - price);
+        
+        // Déterminer le payoff final selon le type d'option
+        if (comp.type.includes('knockout')) {
+          // Pour les options knock-out, le payoff est nul si la barrière est franchie
+          payoff = isBarrierBroken ? 0 : basePayoff;
+        } else { // knockin
+          // Pour les options knock-in, le payoff est non-nul seulement si la barrière est franchie
+          payoff = isBarrierBroken ? basePayoff : 0;
+        }
       } else if (comp.type === 'call') {
-        totalPayoff += Math.max(0, price - strike) * comp.quantity;
+        // Option call standard
+        payoff = Math.max(0, price - strike);
       } else { // put
-        totalPayoff += Math.max(0, strike - price) * comp.quantity;
+        // Option put standard
+        payoff = Math.max(0, strike - price);
       }
+      
+      // Ajouter le payoff au total en tenant compte de la quantité
+      totalPayoff += payoff * (comp.quantity / 100);
     });
     
     return totalPayoff;
