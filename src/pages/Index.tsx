@@ -555,28 +555,6 @@ const Index = () => {
     return sign*y;
   };
 
-  // Calculate real prices using Monte Carlo simulation
-  const simulateRealPrices = (months, startDate) => {
-    const dt = 1/12; // Monthly time step
-    let currentPrice = params.spotPrice;
-    const prices = {};
-    
-    months.forEach((date) => {
-      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-      
-      // Generate random walk
-      const randomWalk = Math.random() * 2 - 1; // Simple normal approximation
-      currentPrice = currentPrice * Math.exp(
-        (realPriceParams.drift - Math.pow(realPriceParams.volatility, 2) / 2) * dt + 
-        realPriceParams.volatility * Math.sqrt(dt) * randomWalk
-      );
-      
-      prices[monthKey] = currentPrice;
-    });
-    
-    return prices;
-  };
-
   // Generate price paths for the entire period using Monte Carlo
   const generatePricePathsForPeriod = (months, startDate, numSimulations = 1000) => {
     const paths = [];
@@ -645,7 +623,6 @@ const Index = () => {
           // Check barrier logic based on option type
           const isAboveBarrier = pathPrice >= barrier;
           const isBelowBarrier = pathPrice <= barrier;
-          const isBelowSecondBarrier = secondBarrier !== undefined && pathPrice <= secondBarrier;
           
           // Apply same barrier logic as in the original function
           if (optionType.includes('knockout')) {
@@ -667,7 +644,10 @@ const Index = () => {
               // Double KO: Knocked out if price crosses either barrier
               const upperBarrier = Math.max(barrier, secondBarrier || 0);
               const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
-              if (pathPrice >= upperBarrier || pathPrice <= lowerBarrier) {
+              
+              // Vérifier si le prix touche soit la barrière supérieure, soit la barrière inférieure
+              // Pour un Call Double KO, l'option est invalidée si le prix monte trop haut ou descend trop bas
+              if ((pathPrice >= upperBarrier) || (pathPrice <= lowerBarrier)) {
                 barrierHit = true;
                 break;
               }
@@ -734,6 +714,8 @@ const Index = () => {
         payoff = baseOptionPayoff;
       } else if (optionType.includes('knockout')) {
         // Knockout option
+        // Une fois que la barrière est touchée (barrierHit=true), l'option est invalidée définitivement
+        // et le payoff reste à zéro, même si le prix revient dans la zone favorable
         if (!barrierHit) {
           payoff = baseOptionPayoff;
         }
@@ -843,70 +825,66 @@ const Index = () => {
         } else if (option.type === 'swap') {
           payoff = spotPrice - price;
         } else if (option.type.includes('knockout') || option.type.includes('knockin')) {
-          // Pour les options à barrière, nous devons déterminer si le prix atteint
-          // aurait franchi la barrière en se basant sur le prix final
+          // Approche simplifiée pour les graphiques de payoff des options à barrière
+          // Note: Ceci est une approximation pour la visualisation, qui ne capture pas
+          // complètement la nature path-dependent de ces options
+          
           const barrier = option.barrierType === 'percent' ? 
             params.spotPrice * (option.barrier / 100) : 
             option.barrier;
-          
+            
           const secondBarrier = option.type.includes('double') ? 
             (option.barrierType === 'percent' ? 
               params.spotPrice * (option.secondBarrier / 100) : 
               option.secondBarrier) : 
             undefined;
-          
-          // CORRECTION : Pour le graphe de payoff, on doit déterminer si l'option est morte
-          // en se basant sur le prix final et les niveaux de barrière
-          // Pour les options knock-out, si le prix final démontre que la barrière a été franchie,
-          // le payoff est nul, sinon on calcule le payoff standard
-          
+            
           let isBarrierBroken = false;
           
-          // Déterminer si la barrière serait franchie en fonction du type d'option
-          // et du prix final
+          // Vérifier si le prix franchit une barrière selon le type d'option
           if (option.type.includes('knockout')) {
-          if (option.type.includes('reverse')) {
-            if (option.type.includes('put')) {
-                // Put Reverse KO: Knocked out si le prix est au-dessus de la barrière
+            if (option.type.includes('reverse')) {
+              if (option.type.includes('put')) {
+                // Put Reverse KO: Knocked out si au-dessus de la barrière
                 isBarrierBroken = price >= barrier;
-        } else {
-                // Call Reverse KO: Knocked out si le prix est en-dessous de la barrière
+              } else {
+                // Call Reverse KO: Knocked out si en-dessous de la barrière
                 isBarrierBroken = price <= barrier;
-            }
-          } else if (option.type.includes('double')) {
-              // Double KO: Knocked out si le prix est en dehors des deux barrières
+              }
+            } else if (option.type.includes('double')) {
+              // Double KO: Knocked out si en dehors des deux barrières
               const upperBarrier = Math.max(barrier, secondBarrier || 0);
               const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
               isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
-          } else {
-            if (option.type.includes('put')) {
-                // Put Standard KO: Knocked out si le prix est en-dessous de la barrière
-                isBarrierBroken = price <= barrier;
             } else {
-                // Call Standard KO: Knocked out si le prix est au-dessus de la barrière
+              if (option.type.includes('put')) {
+                // Put Standard KO: Knocked out si en-dessous de la barrière
+                isBarrierBroken = price <= barrier;
+              } else {
+                // Call Standard KO: Knocked out si au-dessus de la barrière
                 isBarrierBroken = price >= barrier;
               }
             }
           } else if (option.type.includes('knockin')) {
             if (option.type.includes('reverse')) {
               if (option.type.includes('put')) {
-                // Put Reverse KI: Knocked in si le prix est au-dessus de la barrière
+                // Put Reverse KI: Knocked in si au-dessus de la barrière
                 isBarrierBroken = price >= barrier;
               } else {
-                // Call Reverse KI: Knocked in si le prix est en-dessous de la barrière
+                // Call Reverse KI: Knocked in si en-dessous de la barrière
                 isBarrierBroken = price <= barrier;
               }
             } else if (option.type.includes('double')) {
-              // Double KI: Knocked in si le prix est en dehors des deux barrières
+              // Double KI: Knocked in si en dehors des deux barrières
               const upperBarrier = Math.max(barrier, secondBarrier || 0);
               const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
               isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
             } else {
               if (option.type.includes('put')) {
-                // Put Standard KI: Knocked in si le prix est en-dessous de la barrière
+                // Put Standard KI: Knocked in si en-dessous de la barrière
                 isBarrierBroken = price <= barrier;
               } else {
-                // Call Standard KI: Knocked in si le prix est au-dessus de la barrière
+                // Call Standard KI: Knocked in si au-dessus de la barrière
                 isBarrierBroken = price >= barrier;
               }
             }
@@ -1300,12 +1278,18 @@ const Index = () => {
             total + (opt.price * opt.quantity), 0);
 
         // Calculate payoff using real price
-      const totalPayoff = allOptionPrices.reduce((sum, opt) => {
+      const totalPayoff = allOptionPrices.reduce((sum, opt, idx) => {
           let payoff = 0;
           
-        // Chercher l'index de l'option dans la stratégie
-        const optIndex = strategy.findIndex(s => s.type === opt.type && s.strike === opt.strike * (opt.strikeType === 'percent' ? 100 : 1));
-        const optionId = `${opt.type}-${optIndex}`;
+        // Pour les options de la stratégie originale, utiliser l'index original
+        // pour retrouver correctement l'état knock-out/knock-in
+        const originalIndex = options.findIndex((original, i) => {
+          const originalStrike = original.strikeType === 'percent' ? 
+            params.spotPrice * (original.strike/100) : original.strike;
+          return original.type === opt.type && Math.abs(originalStrike - opt.strike) < 0.001;
+        });
+        
+        const optionId = `${opt.type}-${originalIndex}`;
         
         // Vérifier si l'option est knocked out (pour toutes les options à barrière)
         const isKnockedOut = opt.type.includes('knockout') && barrierCrossings[optionId] && barrierCrossings[optionId][i];
