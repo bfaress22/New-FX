@@ -350,6 +350,10 @@ const Index = () => {
   const [useImpliedVol, setUseImpliedVol] = useState(false);
   const [impliedVolatilities, setImpliedVolatilities] = useState<ImpliedVolatility>({});
 
+  // État pour les prix d'options personnalisés
+  const [useCustomOptionPrices, setUseCustomOptionPrices] = useState(false);
+  const [customOptionPrices, setCustomOptionPrices] = useState<{[key: string]: {[key: string]: number}}>({});
+  
   // Historical data and monthly stats
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [monthlyStats, setMonthlyStats] = useState<MonthlyStats[]>([]);
@@ -404,6 +408,28 @@ const Index = () => {
       // Utiliser le volume personnalisé s'il existe, sinon le volume par défaut
       const volume = customVolumes[monthKey] || row.monthlyVolume;
       
+      // Mettre à jour les prix des options si des prix personnalisés sont utilisés
+      let updatedOptionPrices = [...row.optionPrices];
+      
+      if (useCustomOptionPrices && customOptionPrices[monthKey]) {
+        updatedOptionPrices = row.optionPrices.map((opt, j) => {
+          const optionKey = `${opt.type}-${j}`;
+          const customPrice = customOptionPrices[monthKey]?.[optionKey];
+          
+          if (customPrice !== undefined) {
+            return {
+              ...opt,
+              price: customPrice
+            };
+          }
+          return opt;
+        });
+      }
+      
+      // Recalculer le prix de la stratégie
+      const strategyPrice = updatedOptionPrices.reduce((total, opt) => 
+        total + (opt.price * opt.quantity), 0);
+      
       // Recalculer les coûts et le P&L avec le nouveau volume
       const unhedgedCost = -(volume * row.realPrice);
       
@@ -414,12 +440,14 @@ const Index = () => {
       
       const hedgedCost = -(volume * row.realPrice) + 
         (volume * (1 - totalSwapPercentage) * row.totalPayoff) - 
-        (volume * (1 - totalSwapPercentage) * row.strategyPrice);
+        (volume * (1 - totalSwapPercentage) * strategyPrice);
       
       const deltaPnL = hedgedCost - unhedgedCost;
       
       return {
         ...row,
+        optionPrices: updatedOptionPrices,
+        strategyPrice,
         monthlyVolume: volume,
         unhedgedCost,
         hedgedCost,
@@ -832,35 +860,35 @@ const Index = () => {
           const barrier = option.barrierType === 'percent' ? 
             params.spotPrice * (option.barrier / 100) : 
             option.barrier;
-            
+          
           const secondBarrier = option.type.includes('double') ? 
             (option.barrierType === 'percent' ? 
               params.spotPrice * (option.secondBarrier / 100) : 
               option.secondBarrier) : 
             undefined;
-            
+          
           let isBarrierBroken = false;
           
           // Vérifier si le prix franchit une barrière selon le type d'option
           if (option.type.includes('knockout')) {
-            if (option.type.includes('reverse')) {
-              if (option.type.includes('put')) {
+          if (option.type.includes('reverse')) {
+            if (option.type.includes('put')) {
                 // Put Reverse KO: Knocked out si au-dessus de la barrière
                 isBarrierBroken = price >= barrier;
-              } else {
+        } else {
                 // Call Reverse KO: Knocked out si en-dessous de la barrière
                 isBarrierBroken = price <= barrier;
-              }
-            } else if (option.type.includes('double')) {
+            }
+          } else if (option.type.includes('double')) {
               // Double KO: Knocked out si en dehors des deux barrières
               const upperBarrier = Math.max(barrier, secondBarrier || 0);
               const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
               isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
-            } else {
-              if (option.type.includes('put')) {
+          } else {
+            if (option.type.includes('put')) {
                 // Put Standard KO: Knocked out si en-dessous de la barrière
                 isBarrierBroken = price <= barrier;
-              } else {
+            } else {
                 // Call Standard KO: Knocked out si au-dessus de la barrière
                 isBarrierBroken = price >= barrier;
               }
@@ -3723,6 +3751,25 @@ const Index = () => {
               <CardTitle>Detailed Results</CardTitle>
             </CardHeader>
             <CardContent>
+              
+
+              {results.length > 0 && (
+                <div className="mb-8">
+                  
+                  
+                  <div className="flex items-center mb-4">
+                    <input
+                      id="useCustomPrices"
+                      type="checkbox"
+                      className="mr-2"
+                      checked={useCustomOptionPrices}
+                      onChange={(e) => setUseCustomOptionPrices(e.target.checked)}
+                    />
+                    <label htmlFor="useCustomPrices" className="cursor-pointer">
+                      Use my own prices
+                    </label>
+                  </div>
+                  
               <div className="overflow-x-auto">
                 <table className="min-w-full border-collapse">
                   <thead>
@@ -3815,15 +3862,87 @@ const Index = () => {
                           {/* Afficher d'abord les prix des swaps */}
                           {row.optionPrices
                             .filter(opt => opt.type === 'swap')
-                            .map((opt, j) => (
-                              <td key={`swap-${j}`} className="border p-2">{opt.price.toFixed(2)}</td>
-                            ))}
+                                .map((opt, j) => {
+                                  // Créer une clé unique pour ce swap à cette date
+                                  const date = new Date(row.date);
+                                  const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                  const optionKey = `${opt.type}-${j}`;
+                                  
+                                  // Récupérer le prix personnalisé s'il existe, ou utiliser le prix calculé
+                                  const customPrice = 
+                                    customOptionPrices[monthKey]?.[optionKey] !== undefined
+                                      ? customOptionPrices[monthKey][optionKey]
+                                      : opt.price;
+                                  
+                                  return (
+                                    <td key={`swap-${j}`} className="border p-2">
+                                      {useCustomOptionPrices ? (
+                                        <Input
+                                          type="number"
+                                          value={customPrice.toFixed(2)}
+                                          onChange={(e) => {
+                                            const newValue = e.target.value === '' ? 0 : Number(e.target.value);
+                                            // Mettre à jour les prix personnalisés
+                                            setCustomOptionPrices(prev => ({
+                                              ...prev,
+                                              [monthKey]: {
+                                                ...(prev[monthKey] || {}),
+                                                [optionKey]: newValue
+                                              }
+                                            }));
+                                          }}
+                                          onBlur={() => recalculateResults()}
+                                          className="w-24 text-right"
+                                          step="0.01"
+                                        />
+                                      ) : (
+                                        opt.price.toFixed(2)
+                                      )}
+                                    </td>
+                                  );
+                                })}
                           {/* Puis afficher les prix des options */}
                           {row.optionPrices
                             .filter(opt => opt.type !== 'swap')
-                            .map((opt, j) => (
-                              <td key={`option-${j}`} className="border p-2">{opt.price.toFixed(2)}</td>
-                        ))}
+                                .map((opt, j) => {
+                                  // Créer une clé unique pour cet option à cette date
+                                  const date = new Date(row.date);
+                                  const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                  const optionKey = `${opt.type}-${j}`;
+                                  
+                                  // Récupérer le prix personnalisé s'il existe, ou utiliser le prix calculé
+                                  const customPrice = 
+                                    customOptionPrices[monthKey]?.[optionKey] !== undefined
+                                      ? customOptionPrices[monthKey][optionKey]
+                                      : opt.price;
+                                  
+                                  return (
+                                    <td key={`option-${j}`} className="border p-2">
+                                      {useCustomOptionPrices ? (
+                                        <Input
+                                          type="number"
+                                          value={customPrice.toFixed(2)}
+                                          onChange={(e) => {
+                                            const newValue = e.target.value === '' ? 0 : Number(e.target.value);
+                                            // Mettre à jour les prix personnalisés
+                                            setCustomOptionPrices(prev => ({
+                                              ...prev,
+                                              [monthKey]: {
+                                                ...(prev[monthKey] || {}),
+                                                [optionKey]: newValue
+                                              }
+                                            }));
+                                          }}
+                                          onBlur={() => recalculateResults()}
+                                          className="w-24 text-right"
+                                          step="0.01"
+                                        />
+                                      ) : (
+                                        opt.price.toFixed(2)
+                                      )}
+                                    </td>
+                                  );
+                                })}
                         <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
                         <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
                         <td className="border p-2">
@@ -3854,6 +3973,8 @@ const Index = () => {
                   </tbody>
                 </table>
               </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -4064,8 +4185,144 @@ const Index = () => {
                         })()}
                       </td>
                     </tr>
+                    <tr>
+                      <td className="border p-2 font-medium">Strike Target</td>
+                      <td className="border p-2 text-right">
+                        {(() => {
+                          const totalHedgedCost = results.reduce((sum, row) => sum + row.hedgedCost, 0);
+                          const totalVolume = results.reduce((sum, row) => sum + row.monthlyVolume, 0);
+                          return totalVolume > 0 
+                            ? ((-1) * totalHedgedCost / totalVolume).toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2
+                              })
+                            : 'N/A';
+                        })()}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Monthly & Yearly P&L Breakdown</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                {results.length > 0 && (() => {
+                  // Organiser les données par année et par mois
+                  const pnlByYearMonth: Record<string, Record<string, number>> = {};
+                  const yearTotals: Record<string, number> = {};
+                  const monthTotals: Record<string, number> = {};
+                  let grandTotal = 0;
+                  
+                  // Collecter toutes les années et tous les mois uniques
+                  const years: Set<string> = new Set();
+                  const months: string[] = [
+                    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+                  ];
+                  
+                  // Initialiser la structure de données
+                  results.forEach(result => {
+                    const date = new Date(result.date);
+                    const year = date.getFullYear().toString();
+                    const month = date.getMonth();
+                    const monthKey = months[month];
+                    
+                    years.add(year);
+                    
+                    if (!pnlByYearMonth[year]) {
+                      pnlByYearMonth[year] = {};
+                      yearTotals[year] = 0;
+                    }
+                    
+                    if (!pnlByYearMonth[year][monthKey]) {
+                      pnlByYearMonth[year][monthKey] = 0;
+                    }
+                    
+                    // Ajouter le P&L au mois correspondant
+                    pnlByYearMonth[year][monthKey] += result.deltaPnL;
+                    
+                    // Mettre à jour les totaux
+                    yearTotals[year] += result.deltaPnL;
+                    if (!monthTotals[monthKey]) monthTotals[monthKey] = 0;
+                    monthTotals[monthKey] += result.deltaPnL;
+                    grandTotal += result.deltaPnL;
+                  });
+                  
+                  // Convertir l'ensemble des années en tableau trié
+                  const sortedYears = Array.from(years).sort();
+                  
+                  // Fonction pour appliquer une couleur en fonction de la valeur
+                  const getPnLColor = (value: number) => {
+                    if (value > 0) return 'bg-green-100';
+                    if (value < 0) return 'bg-red-100';
+                    return '';
+                  };
+                  
+                  // Fonction pour formater les valeurs de P&L
+                  const formatPnL = (value: number) => {
+                    if (Math.abs(value) < 0.01) return '0';
+                    // Formater en milliers avec un point de séparation de milliers
+                    return (value / 1000).toLocaleString(undefined, {
+                      minimumFractionDigits: 0,
+                      maximumFractionDigits: 3
+                    });
+                  };
+                  
+                  return (
+                    <table className="min-w-full border-collapse text-sm">
+                      <thead>
+                        <tr className="bg-gray-100">
+                          <th className="border p-2 font-semibold text-left"></th>
+                          {months.map(month => (
+                            <th key={month} className="border p-2 font-semibold text-center w-20">{month}</th>
+                          ))}
+                          <th className="border p-2 font-semibold text-center w-20">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedYears.map(year => (
+                          <tr key={year}>
+                            <td className="border p-2 font-semibold">{year}</td>
+                            {months.map(month => {
+                              const value = pnlByYearMonth[year][month] || 0;
+                              return (
+                                <td 
+                                  key={`${year}-${month}`} 
+                                  className={`border p-2 text-right ${getPnLColor(value)}`}
+                                >
+                                  {value ? formatPnL(value) : '-'}
+                                </td>
+                              );
+                            })}
+                            <td className={`border p-2 text-right font-semibold ${getPnLColor(yearTotals[year])}`}>
+                              {formatPnL(yearTotals[year])}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="bg-gray-50">
+                          <td className="border p-2 font-semibold">Total</td>
+                          {months.map(month => (
+                            <td 
+                              key={`total-${month}`} 
+                              className={`border p-2 text-right font-semibold ${getPnLColor(monthTotals[month] || 0)}`}
+                            >
+                              {monthTotals[month] ? formatPnL(monthTotals[month]) : '-'}
+                            </td>
+                          ))}
+                          <td className={`border p-2 text-right font-semibold ${getPnLColor(grandTotal)}`}>
+                            {formatPnL(grandTotal)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  );
+                })()}
               </div>
             </CardContent>
           </Card>

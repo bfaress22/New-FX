@@ -12,6 +12,8 @@ interface YearlyResult {
   hedgedCost: number;
   unhedgedCost: number;
   deltaPnL: number;
+  strategyPremium: number;
+  volume: number;
 }
 
 const SavedScenarios = () => {
@@ -25,7 +27,8 @@ const SavedScenarios = () => {
     strategy: false,
     detailedResults: false,
     yearlyStats: false,
-    totalStats: false
+    totalStats: false,
+    monthlyPnL: false
   });
 
   // Toggle section visibility
@@ -63,19 +66,52 @@ const SavedScenarios = () => {
 
   // Add the calculateYearlyResults function
   const calculateYearlyResults = (results: SavedScenario['results']): Record<string, YearlyResult> => {
+    // Vérifier le format des dates dans les résultats
+    if (results.length > 0) {
+      console.log('Sample date:', results[0].date, 'Type:', typeof results[0].date);
+      console.log('Date parsed:', new Date(results[0].date));
+    }
+    
     return results.reduce((acc: Record<string, YearlyResult>, row) => {
-      const year = row.date.split(' ')[1];
+      // Extraire l'année depuis la date correctement
+      let year: string;
+      
+      try {
+        // Essayer d'abord avec Date
+        const date = new Date(row.date);
+        if (!isNaN(date.getTime())) {
+          year = date.getFullYear().toString();
+        } else {
+          // Si la date n'est pas valide, essayer de l'extraire du format de chaîne
+          // Format possible: "Jan 2023" ou similaire
+          const parts = row.date.split(' ');
+          if (parts.length > 1) {
+            year = parts[1]; // Prendre la deuxième partie qui devrait être l'année
+          } else {
+            // Dernier recours, utiliser la chaîne complète
+            year = row.date;
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors de l\'extraction de l\'année:', error);
+        year = 'undefined';
+      }
+      
       if (!acc[year]) {
         acc[year] = {
           hedgedCost: 0,
           unhedgedCost: 0,
-          deltaPnL: 0
+          deltaPnL: 0,
+          strategyPremium: 0,
+          volume: 0
         };
       }
       
       acc[year].hedgedCost += row.hedgedCost;
       acc[year].unhedgedCost += row.unhedgedCost;
       acc[year].deltaPnL += row.deltaPnL;
+      acc[year].strategyPremium += (row.strategyPrice * row.monthlyVolume);
+      acc[year].volume += row.monthlyVolume;
       
       return acc;
     }, {});
@@ -263,21 +299,31 @@ const SavedScenarios = () => {
                             <th className="border p-2">Hedged Cost</th>
                             <th className="border p-2">Unhedged Cost</th>
                             <th className="border p-2">Delta P&L</th>
+                            <th className="border p-2">Strategy Premium</th>
+                            <th className="border p-2">Strike Target</th>
                             <th className="border p-2">Cost Reduction (%)</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {Object.entries(calculateYearlyResults(scenario.results)).map(([year, data]) => (
-                            <tr key={year}>
-                              <td className="border p-2">{year}</td>
-                              <td className="border p-2">{data.hedgedCost.toFixed(2)}</td>
-                              <td className="border p-2">{data.unhedgedCost.toFixed(2)}</td>
-                              <td className="border p-2">{data.deltaPnL.toFixed(2)}</td>
-                              <td className="border p-2">
-                                {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2)}%
-                              </td>
-                            </tr>
-                          ))}
+                          {Object.entries(calculateYearlyResults(scenario.results)).map(([year, data]) => {
+                            // Ajouter un log pour débogage
+                            console.log('Year:', year, 'Data:', data);
+                            return (
+                              <tr key={year}>
+                                <td className="border p-2">{year}</td>
+                                <td className="border p-2">{data.hedgedCost.toFixed(2)}</td>
+                                <td className="border p-2">{data.unhedgedCost.toFixed(2)}</td>
+                                <td className="border p-2">{data.deltaPnL.toFixed(2)}</td>
+                                <td className="border p-2">{data.strategyPremium.toFixed(2)}</td>
+                                <td className="border p-2">
+                                  {data.volume > 0 ? (data.hedgedCost / data.volume).toFixed(2) : 'N/A'}
+                                </td>
+                                <td className="border p-2">
+                                  {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2)}%
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -317,6 +363,12 @@ const SavedScenarios = () => {
                             </td>
                           </tr>
                           <tr>
+                            <td className="border p-2 font-medium">Total Strategy Premium</td>
+                            <td className="border p-2 text-right">
+                              {scenario.results.reduce((sum, row) => sum + (row.strategyPrice * row.monthlyVolume), 0).toFixed(2)}
+                            </td>
+                          </tr>
+                          <tr>
                             <td className="border p-2 font-medium">Cost Reduction (%)</td>
                             <td className="border p-2 text-right">
                               {(() => {
@@ -326,8 +378,147 @@ const SavedScenarios = () => {
                               })()}%
                             </td>
                           </tr>
+                          <tr>
+                            <td className="border p-2 font-medium">Strike Target</td>
+                            <td className="border p-2 text-right">
+                              {(() => {
+                                const totalHedgedCost = scenario.results.reduce((sum, row) => sum + row.hedgedCost, 0);
+                                const totalVolume = scenario.results.reduce((sum, row) => sum + row.monthlyVolume, 0);
+                                return totalVolume > 0 
+                                  ? Number(totalHedgedCost / totalVolume).toFixed(2)
+                                  : 'N/A';
+                              })()}
+                            </td>
+                          </tr>
                         </tbody>
                       </table>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-6">
+                  <Button
+                    variant="outline"
+                    onClick={() => toggleSection(scenario.id, 'monthlyPnL')}
+                    className="flex items-center gap-2 mb-2"
+                  >
+                    {expandedSections[scenario.id]?.monthlyPnL ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    Monthly & Yearly P&L Breakdown
+                  </Button>
+                  
+                  {expandedSections[scenario.id]?.monthlyPnL && (
+                    <div className="overflow-x-auto">
+                      {(() => {
+                        // Organiser les données par année et par mois
+                        const pnlByYearMonth: Record<string, Record<string, number>> = {};
+                        const yearTotals: Record<string, number> = {};
+                        const monthTotals: Record<string, number> = {};
+                        let grandTotal = 0;
+                        
+                        // Collecter toutes les années et tous les mois uniques
+                        const years: Set<string> = new Set();
+                        const months: string[] = [
+                          'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+                        ];
+                        
+                        // Initialiser la structure de données
+                        scenario.results.forEach(result => {
+                          const date = new Date(result.date);
+                          const year = date.getFullYear().toString();
+                          const month = date.getMonth();
+                          const monthKey = months[month];
+                          
+                          years.add(year);
+                          
+                          if (!pnlByYearMonth[year]) {
+                            pnlByYearMonth[year] = {};
+                            yearTotals[year] = 0;
+                          }
+                          
+                          if (!pnlByYearMonth[year][monthKey]) {
+                            pnlByYearMonth[year][monthKey] = 0;
+                          }
+                          
+                          // Ajouter le P&L au mois correspondant
+                          pnlByYearMonth[year][monthKey] += result.deltaPnL;
+                          
+                          // Mettre à jour les totaux
+                          yearTotals[year] += result.deltaPnL;
+                          if (!monthTotals[monthKey]) monthTotals[monthKey] = 0;
+                          monthTotals[monthKey] += result.deltaPnL;
+                          grandTotal += result.deltaPnL;
+                        });
+                        
+                        // Convertir l'ensemble des années en tableau trié
+                        const sortedYears = Array.from(years).sort();
+                        
+                        // Fonction pour appliquer une couleur en fonction de la valeur
+                        const getPnLColor = (value: number) => {
+                          if (value > 0) return 'bg-green-100';
+                          if (value < 0) return 'bg-red-100';
+                          return '';
+                        };
+                        
+                        // Fonction pour formater les valeurs de P&L
+                        const formatPnL = (value: number) => {
+                          if (Math.abs(value) < 0.01) return '0';
+                          // Formater en milliers avec un point de séparation de milliers
+                          return (value / 1000).toLocaleString(undefined, {
+                            minimumFractionDigits: 0,
+                            maximumFractionDigits: 3
+                          });
+                        };
+                        
+                        return (
+                          <table className="min-w-full border-collapse text-sm">
+                            <thead>
+                              <tr className="bg-gray-100">
+                                <th className="border p-2 font-semibold text-left"></th>
+                                {months.map(month => (
+                                  <th key={month} className="border p-2 font-semibold text-center w-20">{month}</th>
+                                ))}
+                                <th className="border p-2 font-semibold text-center w-20">Total</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sortedYears.map(year => (
+                                <tr key={year}>
+                                  <td className="border p-2 font-semibold">{year}</td>
+                                  {months.map(month => {
+                                    const value = pnlByYearMonth[year][month] || 0;
+                                    return (
+                                      <td 
+                                        key={`${year}-${month}`} 
+                                        className={`border p-2 text-right ${getPnLColor(value)}`}
+                                      >
+                                        {value ? formatPnL(value) : '-'}
+                                      </td>
+                                    );
+                                  })}
+                                  <td className={`border p-2 text-right font-semibold ${getPnLColor(yearTotals[year])}`}>
+                                    {formatPnL(yearTotals[year])}
+                                  </td>
+                                </tr>
+                              ))}
+                              <tr className="bg-gray-50">
+                                <td className="border p-2 font-semibold">Total</td>
+                                {months.map(month => (
+                                  <td 
+                                    key={`total-${month}`} 
+                                    className={`border p-2 text-right font-semibold ${getPnLColor(monthTotals[month] || 0)}`}
+                                  >
+                                    {monthTotals[month] ? formatPnL(monthTotals[month]) : '-'}
+                                  </td>
+                                ))}
+                                <td className={`border p-2 text-right font-semibold ${getPnLColor(grandTotal)}`}>
+                                  {formatPnL(grandTotal)}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
