@@ -1,19 +1,21 @@
-import React, { useState, useEffect } from 'react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Plus, Trash2, Save } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from 'react-router-dom';
-import { CalculatorState } from '../types/CalculatorState';
+import { CalculatorState } from '@/types/CalculatorState';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import MonteCarloVisualization from '../components/MonteCarloVisualization';
+import { SimulationData } from '../components/MonteCarloVisualization';
 
-interface StressTestScenario {
+export interface StressTestScenario {
   name: string;
   description: string;
   volatility: number;
@@ -27,7 +29,7 @@ interface StressTestScenario {
   historicalData?: HistoricalDataPoint[];
 }
 
-interface StrategyComponent {
+export interface StrategyComponent {
   type: 'call' | 'put' | 'swap' | 'call-knockout' | 'call-reverse-knockout' | 'call-double-knockout' | 
          'put-knockout' | 'put-reverse-knockout' | 'put-double-knockout' | 
          'call-knockin' | 'call-reverse-knockin' | 'call-double-knockin' |
@@ -41,7 +43,7 @@ interface StrategyComponent {
   barrierType?: 'percent' | 'absolute';  // Whether barrier is % of spot or absolute value
 }
 
-interface Result {
+export interface Result {
   date: string;
   timeToMaturity: number;
   forward: number;
@@ -1010,8 +1012,103 @@ const Index = () => {
       setRealPrices(simulatedPrices);
     }
 
+    // Prepare Monte Carlo visualization data once we have paths
+    const timeLabels = months.map(
+      (date) => `${date.getFullYear()}-${date.getMonth() + 1}`
+    );
+
+    // Select randomly up to 100 paths to display
+    const maxDisplayPaths = Math.min(100, paths.length);
+    const selectedPathIndices = [];
+    
+    // If we have fewer than 100 paths, use all of them
+    if (paths.length <= maxDisplayPaths) {
+      for (let i = 0; i < paths.length; i++) {
+        selectedPathIndices.push(i);
+      }
+    } else {
+      // Otherwise, select 100 random indices
+      while (selectedPathIndices.length < maxDisplayPaths) {
+        const randomIndex = Math.floor(Math.random() * paths.length);
+        if (!selectedPathIndices.includes(randomIndex)) {
+          selectedPathIndices.push(randomIndex);
+        }
+      }
+    }
+    
+    // Create the real price paths data
+    const realPricePaths = selectedPathIndices.map(pathIndex => 
+      monthlyIndices.map(idx => paths[pathIndex][idx])
+    );
+
+    // Calculate barrier option prices if we have barrier options
+    const barrierOptions = strategy.filter(
+      (opt) => opt.type.includes('knockout') || opt.type.includes('knockin')
+    );
+
+    const barrierOptionPricePaths: number[][] = [];
+
+    if (barrierOptions.length > 0) {
+      // For simplicity, use the first barrier option
+      const barrierOption = barrierOptions[0];
+      
+      // Calculate barrier value
+      const barrier = barrierOption.barrierType === 'percent' 
+        ? params.spotPrice * (barrierOption.barrier! / 100) 
+        : barrierOption.barrier!;
+      
+      const secondBarrier = barrierOption.type.includes('double')
+        ? barrierOption.barrierType === 'percent'
+          ? params.spotPrice * (barrierOption.secondBarrier! / 100)
+          : barrierOption.secondBarrier
+        : undefined;
+        
+      // Calculate strike
+      const strike = barrierOption.strikeType === 'percent'
+        ? params.spotPrice * (barrierOption.strike / 100)
+        : barrierOption.strike;
+
+      // Calculate option prices for selected paths
+      for (const pathIndex of selectedPathIndices) {
+        const path = paths[pathIndex];
+        const optionPrices: number[] = [];
+        
+        // For each month, calculate the option price
+        for (let monthIdx = 0; monthIdx < monthlyIndices.length; monthIdx++) {
+          const maturityIndex = monthlyIndices[monthIdx];
+          
+          // Calculate option price at this point
+          const optionPrice = calculatePricesFromPaths(
+            barrierOption.type,
+            params.spotPrice,
+            strike,
+            params.interestRate/100,
+            maturityIndex,
+            [path],
+            barrier,
+            secondBarrier
+          );
+          
+          optionPrices.push(optionPrice);
+        }
+        
+        barrierOptionPricePaths.push(optionPrices);
+      }
+    }
+
+    // Update visualization data with the calculated paths
+    setSimulationData({
+      realPricePaths,
+      barrierOptionPricePaths,
+      timeLabels,
+      strategyName: barrierOptions.length > 0 
+        ? `${barrierOptions[0].type} à ${barrierOptions[0].strike}` 
+        : 'Stratégie actuelle',
+    });
+
+    // Continue with the rest of calculateResults
     const timeToMaturities = months.map(date => {
-        const diffTime = Math.abs(date.getTime() - startDate.getTime());
+      const diffTime = Math.abs(date.getTime() - startDate.getTime());
       return diffTime / (365.25 * 24 * 60 * 60 * 1000);
     });
 
@@ -1422,6 +1519,12 @@ const Index = () => {
     });
 
     setResults(detailedResults);
+    
+    // Après avoir mis à jour toutes les données de résultats, recalculez les simulations Monte Carlo
+    // Cette ligne devrait être placée juste avant la fin de la fonction calculateResults
+    if (realPriceParams.useSimulation) {
+      recalculateMonteCarloSimulations();
+    }
   };
 
   useEffect(() => {
@@ -2918,6 +3021,210 @@ const Index = () => {
     </div>
   )}
 
+  // Add this near the other state variables
+  const [showMonteCarloVisualization, setShowMonteCarloVisualization] = useState<boolean>(false);
+  
+  // Generate months and startDate for simulations
+  const startDate = new Date(params.startDate);
+  const months = Array.from({ length: params.monthsToHedge }, (_, i) => {
+    const date = new Date(startDate);
+    date.setMonth(date.getMonth() + i + 1);
+    return date;
+  });
+  
+  // Store simulation data
+  const [simulationData, setSimulationData] = useState<SimulationData | null>(null);
+  const [isRunningSimulation, setIsRunningSimulation] = useState<boolean>(false);
+
+  // Ajoutez cette fonction pour recalculer les simulations Monte Carlo lorsque les paramètres changent
+  const recalculateMonteCarloSimulations = useCallback(() => {
+    if (!results) return;
+    
+    setIsRunningSimulation(true);
+
+    // Récupérer les mois et date de début pour les simulations
+    const startDate = new Date(params.startDate);
+    const months = [];
+    let currentDate = new Date(startDate);
+
+    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
+
+    if (remainingDaysInMonth > 0) {
+      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    }
+
+    for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
+      currentDate.setMonth(currentDate.getMonth() + 1);
+      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    }
+
+    // Générer les chemins de prix pour toute la période seulement si la simulation est activée
+    let paths = [];
+    let monthlyIndices = [];
+    let timeLabels = [];
+    let realPricePaths = [];
+    
+    // Générer des chemins de prix seulement si la simulation est activée
+    if (realPriceParams.useSimulation) {
+      const pathsData = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
+      paths = pathsData.paths;
+      monthlyIndices = pathsData.monthlyIndices;
+      
+      // Préparer les données de visualisation Monte Carlo
+      timeLabels = months.map(
+        (date) => `${date.getFullYear()}-${date.getMonth() + 1}`
+      );
+
+      // Sélectionner aléatoirement jusqu'à 100 chemins à afficher
+      const maxDisplayPaths = Math.min(100, paths.length);
+      const selectedPathIndices = [];
+      
+      // Si nous avons moins de 100 chemins, utilisez-les tous
+      if (paths.length <= maxDisplayPaths) {
+        for (let i = 0; i < paths.length; i++) {
+          selectedPathIndices.push(i);
+        }
+      } else {
+        // Sinon, sélectionnez 100 indices aléatoires
+        while (selectedPathIndices.length < maxDisplayPaths) {
+          const randomIndex = Math.floor(Math.random() * paths.length);
+          if (!selectedPathIndices.includes(randomIndex)) {
+            selectedPathIndices.push(randomIndex);
+          }
+        }
+      }
+      
+      // Créer les données de chemins de prix réels
+      realPricePaths = selectedPathIndices.map(pathIndex => 
+        monthlyIndices.map(idx => paths[pathIndex][idx])
+      );
+    } else {
+      // Si la simulation n'est pas utilisée, nous avons quand même besoin de timeLabels pour les options à barrière
+      timeLabels = months.map(
+        (date) => `${date.getFullYear()}-${date.getMonth() + 1}`
+      );
+      
+      // Générer des chemins simples pour les options barrière si nécessaire
+      // Même si useSimulation est false, nous voulons générer des chemins pour les options à barrière
+      const pathsData = generatePricePathsForPeriod(months, startDate, 100); // Utiliser seulement 100 simulations pour les options barrière
+      paths = pathsData.paths;
+      monthlyIndices = pathsData.monthlyIndices;
+    }
+
+    // Calculer les prix des options à barrière si nous en avons, même si useSimulation est false
+    const barrierOptions = strategy.filter(
+      (opt) => opt.type.includes('knockout') || opt.type.includes('knockin')
+    );
+
+    const barrierOptionPricePaths: number[][] = [];
+
+    if (barrierOptions.length > 0) {
+      // Pour simplifier, utilisez la première option à barrière
+      const barrierOption = barrierOptions[0];
+      
+      // Calculer la valeur de la barrière
+      const barrier = barrierOption.barrierType === 'percent' 
+        ? params.spotPrice * (barrierOption.barrier! / 100) 
+        : barrierOption.barrier!;
+      
+      const secondBarrier = barrierOption.type.includes('double')
+        ? barrierOption.barrierType === 'percent'
+          ? params.spotPrice * (barrierOption.secondBarrier! / 100)
+          : barrierOption.secondBarrier
+        : undefined;
+        
+      // Calculer le strike
+      const strike = barrierOption.strikeType === 'percent'
+        ? params.spotPrice * (barrierOption.strike / 100)
+        : barrierOption.strike;
+
+      // Sélectionner les chemins à utiliser (soit tous si peu nombreux, soit un échantillon aléatoire)
+      const maxDisplayPaths = Math.min(100, paths.length);
+      const selectedPathIndices = [];
+      
+      // Si nous avons moins de 100 chemins, utilisez-les tous
+      if (paths.length <= maxDisplayPaths) {
+        for (let i = 0; i < paths.length; i++) {
+          selectedPathIndices.push(i);
+        }
+      } else {
+        // Sinon, sélectionnez 100 indices aléatoires
+        while (selectedPathIndices.length < maxDisplayPaths) {
+          const randomIndex = Math.floor(Math.random() * paths.length);
+          if (!selectedPathIndices.includes(randomIndex)) {
+            selectedPathIndices.push(randomIndex);
+          }
+        }
+      }
+
+      // Calculer les prix des options pour les chemins sélectionnés
+      for (const pathIndex of selectedPathIndices) {
+        const path = paths[pathIndex];
+        const optionPrices: number[] = [];
+        
+        // Pour chaque mois, calculer le prix de l'option
+        for (let monthIdx = 0; monthIdx < monthlyIndices.length; monthIdx++) {
+          const maturityIndex = monthlyIndices[monthIdx];
+          
+          // Calculer le prix de l'option à ce point
+          const optionPrice = calculatePricesFromPaths(
+            barrierOption.type,
+            params.spotPrice,
+            strike,
+            params.interestRate/100,
+            maturityIndex,
+            [path],
+            barrier,
+            secondBarrier
+          );
+          
+          optionPrices.push(optionPrice);
+        }
+        
+        barrierOptionPricePaths.push(optionPrices);
+      }
+    }
+
+    // Mettre à jour les données de visualisation avec les chemins calculés
+    setSimulationData({
+      realPricePaths,
+      barrierOptionPricePaths,
+      timeLabels,
+      strategyName: barrierOptions.length > 0 
+        ? `${barrierOptions[0].type} à ${barrierOptions[0].strike}` 
+        : 'Stratégie actuelle',
+    });
+
+    setIsRunningSimulation(false);
+  }, [params, realPriceParams.numSimulations, strategy, results]);
+
+  // Update the realPriceParams and recalculate when numSimulations changes
+  const handleNumSimulationsChange = (value: number) => {
+    // Ensure value is between 100 and 5000
+    const validValue = Math.max(100, Math.min(5000, value));
+    
+    setRealPriceParams(prev => ({
+      ...prev,
+      numSimulations: validValue
+    }));
+    
+    // Recalculer les simulations avec le nouveau nombre de simulations
+    if (results && realPriceParams.useSimulation) {
+      recalculateMonteCarloSimulations();
+    }
+  };
+
+  // Ajouter un effet useEffect pour recalculer les simulations Monte Carlo lorsque useSimulation change
+  useEffect(() => {
+    if (results) {
+      recalculateMonteCarloSimulations();
+    }
+  }, [realPriceParams.useSimulation, recalculateMonteCarloSimulations, results, 
+      // Aussi recalculer quand la stratégie change pour les options à barrière
+      strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin'))
+    ]);
+
   return (
     <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
       <style type="text/css" media="print">
@@ -4068,6 +4375,142 @@ const Index = () => {
               </CardContent>
             </Card>
           )}
+
+          {/* Monte Carlo Simulation Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Monte Carlo Simulation</CardTitle>
+              <CardDescription>Visualize price paths and option price evolution</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-row justify-between mb-4">
+                <div>
+                  <Button 
+                    onClick={() => {
+                      if (results) {
+                        if (!simulationData) {
+                          recalculateMonteCarloSimulations(); 
+                        }
+                        setShowMonteCarloVisualization(!showMonteCarloVisualization);
+                      } else {
+                        alert("Calculate Strategy Results first to generate Monte Carlo simulations.");
+                      }
+                    }}
+                    disabled={!results || isRunningSimulation}
+                    className="mr-2"
+                  >
+                    {isRunningSimulation ? (
+                      <>
+                        <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-solid border-current border-e-transparent align-[-0.125em]"></span>
+                        Running Simulation...
+                      </>
+                    ) : showMonteCarloVisualization ? (
+                      "Hide Visualization"
+                    ) : (
+                      "Show Monte Carlo Visualization"
+                    )}
+                  </Button>
+                </div>
+                <div className="flex items-center">
+                  {isRunningSimulation ? (
+                    <span className="text-sm text-blue-600">
+                      Calculating simulations...
+                    </span>
+                  ) : realPriceParams.useSimulation ? (
+                    <span className="text-sm text-gray-600">
+                      Using {realPriceParams.numSimulations || 1000} simulations (configured in Strategy Parameters)
+                    </span>
+                  ) : strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) ? (
+                    <span className="text-sm text-blue-600">
+                      Barrier option visualization available (Monte Carlo not used for real prices)
+                    </span>
+                  ) : (
+                    <span className="text-sm text-amber-600 font-semibold">
+                      Enable "Use Monte Carlo Simulation" or add barrier options to see visualizations
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {showMonteCarloVisualization && results && simulationData && (
+                <div>
+                  <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                    <h4 className="font-medium text-blue-800 mb-1">Monte Carlo Visualization Information</h4>
+                    <ul className="list-disc ml-5 text-sm text-blue-700">
+                      {realPriceParams.useSimulation && (
+                        <li>Displaying {Math.min(100, realPriceParams.numSimulations)} random paths out of {realPriceParams.numSimulations} total simulations</li>
+                      )}
+                      {realPriceParams.useSimulation && simulationData.realPricePaths.length > 0 && (
+                        <li>Real Price Paths: Shows simulated price paths based on the volatility parameters</li>
+                      )}
+                      {strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) ? (
+                        <li>Option Price Paths: Shows the evolution of barrier option prices over time</li>
+                      ) : (
+                        <li className="text-gray-500">Option Price Paths: Not available (requires barrier options in your strategy)</li>
+                      )}
+                    </ul>
+                  </div>
+                  
+                  <MonteCarloVisualization 
+                    simulationData={{
+                      ...simulationData,
+                      // S'assurer que nous avons toujours les bonnes données pour les chemins d'options à barrière
+                      barrierOptionPricePaths: 
+                        strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) 
+                          ? simulationData.barrierOptionPricePaths 
+                          : []
+                    }} 
+                  />
+                  
+                  {!strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) && (
+                    <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-800">
+                      <p className="font-medium">Option Price Paths Unavailable</p>
+                      <p>Option Price Paths visualization is only available when your strategy includes barrier options (Knock-in/Knock-out).</p>
+                      <p className="mt-1">Add a barrier option to your strategy to enable this visualization.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {(!showMonteCarloVisualization || !results || !simulationData) && (
+                <div className="text-center py-8 bg-gray-50 rounded-md border border-gray-200">
+                  {!results ? (
+                    <div>
+                      <p className="text-gray-700 font-medium">Calculate Strategy Results First</p>
+                      <p className="mt-1 text-sm text-gray-500">Click "Calculate Results" to generate Monte Carlo simulations.</p>
+                    </div>
+                  ) : !simulationData ? (
+                    <div>
+                      <p className="text-gray-700 font-medium">No Simulation Data Available</p>
+                      <p className="mt-1 text-sm text-gray-500">Please recalculate results to generate simulation data.</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-gray-700 font-medium">Visualization Hidden</p>
+                      <p className="mt-1 text-sm text-gray-500">Click "Show Monte Carlo Visualization" to display price paths.</p>
+                    </div>
+                  )}
+
+                  <Button 
+                    onClick={() => {
+                      if (results) {
+                        if (!simulationData) {
+                          recalculateMonteCarloSimulations();
+                        }
+                        setShowMonteCarloVisualization(true);
+                      }
+                    }}
+                    disabled={!results || isRunningSimulation}
+                    className="mt-4"
+                  >
+                    {!simulationData 
+                      ? "Generate Simulation" 
+                      : "Show Visualization"}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>
