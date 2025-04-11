@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Plus, Trash2, Save } from 'lucide-react';
+import { Plus, Trash2, Save, X, AlertTriangle, Table } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from 'react-router-dom';
-import { CalculatorState } from '@/types/CalculatorState';
+import { CalculatorState, CustomPeriod } from '@/types/CalculatorState';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { Slider } from "@/components/ui/slider";
@@ -14,6 +14,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import MonteCarloVisualization from '../components/MonteCarloVisualization';
 import { SimulationData } from '../components/MonteCarloVisualization';
+import { Switch } from "@/components/ui/switch";
+import { v4 as uuidv4 } from 'uuid';
 
 export interface StressTestScenario {
   name: string;
@@ -178,7 +180,9 @@ const Index = () => {
       monthsToHedge: 12,
       interestRate: 2.0,
       totalVolume: 1000000,
-      spotPrice: 100
+      spotPrice: 100,
+      useCustomPeriods: false,
+      customPeriods: []
     };
   });
 
@@ -472,41 +476,69 @@ const Index = () => {
     secondBarrier?: number, // Second barrier for double barrier options
     numSimulations: number = 1000 // Number of simulations
   ) => {
-    // Generate a simple price path for this specific option
-      const numSteps = Math.max(252 * t, 50); // At least 50 steps
-      const dt = t / numSteps;
-      
-    // Generate paths for just this one option
-    const paths = [];
-    for (let i = 0; i < numSimulations; i++) {
-      const path = [S]; // Start with current price
-      
-      // Simulate price path
-      for (let step = 0; step < numSteps; step++) {
-        const previousPrice = path[path.length - 1];
-        // Generate random normal variable
-        const randomWalk = Math.random() * 2 - 1; // Simple approximation of normal distribution
+    // Vérifier si la méthode Closed-Form est activée et applicable pour ce type d'option
+    const canUseClosedForm = useClosedForm && 
+                             !secondBarrier && 
+                             !optionType.includes('reverse') && 
+                             !optionType.includes('double');
+    
+    if (canUseClosedForm) {
+      try {
+        // Déterminer si c'est un call ou un put
+        const isCall = optionType.includes('call');
+        const isKnockIn = optionType.includes('knockin');
         
-        // Update price using geometric Brownian motion
-        const nextPrice = previousPrice * Math.exp(
-          (r - 0.5 * Math.pow(sigma, 2)) * dt + 
-          sigma * Math.sqrt(dt) * randomWalk
-        );
+        // Déterminer si c'est une barrière haute ou basse
+        const isUpBarrier = barrier > S;
         
-        path.push(nextPrice);
+        // Sélectionner la formule appropriée
+        let price = 0;
+        
+        if (isCall) {
+          if (isKnockIn) {
+            price = isUpBarrier ? 
+              calculateUpAndInCallPrice(S, K, r, t, sigma, barrier) : 
+              calculateDownAndInCallPrice(S, K, r, t, sigma, barrier);
+          } else { // Knock-Out
+            price = isUpBarrier ? 
+              calculateUpAndOutCallPrice(S, K, r, t, sigma, barrier) : 
+              calculateDownAndOutCallPrice(S, K, r, t, sigma, barrier);
+          }
+        } else { // Put
+          if (isKnockIn) {
+            price = isUpBarrier ? 
+              calculateUpAndInPutPrice(S, K, r, t, sigma, barrier) : 
+              calculateDownAndInPutPrice(S, K, r, t, sigma, barrier);
+          } else { // Knock-Out
+            price = isUpBarrier ? 
+              calculateUpAndOutPutPrice(S, K, r, t, sigma, barrier) : 
+              calculateDownAndOutPutPrice(S, K, r, t, sigma, barrier);
+          }
+        }
+        
+        // S'assurer que le prix n'est pas négatif
+        return Math.max(0, price);
+      } catch (error) {
+        console.warn("Erreur dans le calcul en forme fermée, utilisation de Monte Carlo à la place:", error);
+        // Ne pas revenir silencieusement à Monte Carlo - informer l'utilisateur
       }
-      
-      paths.push(path);
     }
     
-    // Use our new function to calculate the price
+    // Utiliser Monte Carlo uniquement si Closed-Form n'est pas activé
+    // ou pour les types d'options non supportés par les formules analytiques
+    const simulationResults = generatePricePathsForPeriod(
+      t * 12, // Convertir années en mois
+      new Date().toISOString().split('T')[0], // Date actuelle
+      numSimulations
+    );
+
     return calculatePricesFromPaths(
       optionType,
       S,
       K,
       r,
-      numSteps, // The final index in the path
-      paths,
+      simulationResults.paths[0].length - 1, // Dernier index = maturité
+      simulationResults.paths,
       barrier,
       secondBarrier
     );
@@ -983,23 +1015,75 @@ const Index = () => {
   // Calculate detailed results
   const calculateResults = () => {
     const startDate = new Date(params.startDate);
-    const months = [];
-    let currentDate = new Date(startDate);
+    let months = [];
+    let monthlyVolumes = [];
 
-    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
-    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
+    // Check if we're using custom periods or standard months
+    if (params.useCustomPeriods && params.customPeriods.length > 0) {
+      // Sort custom periods by maturity date
+      const sortedPeriods = [...params.customPeriods].sort(
+        (a, b) => new Date(a.maturityDate).getTime() - new Date(b.maturityDate).getTime()
+      );
+      
+      // Convert custom periods to months array
+      months = sortedPeriods.map(period => new Date(period.maturityDate));
+      
+      // Use the volumes defined in custom periods
+      monthlyVolumes = sortedPeriods.map(period => period.volume);
+    } else {
+      // Use the standard month generation logic
+      let currentDate = new Date(startDate);
+      const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+      const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
 
-    if (remainingDaysInMonth > 0) {
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+      if (remainingDaysInMonth > 0) {
+        months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+      }
+
+      for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
+        currentDate.setMonth(currentDate.getMonth() + 1);
+        months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+      }
+        
+      // Use equal volumes for each month
+      const monthlyVolume = params.totalVolume / months.length;
+      monthlyVolumes = Array(months.length).fill(monthlyVolume);
     }
 
-    for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
-      currentDate.setMonth(currentDate.getMonth() + 1);
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    // Si useClosedForm est activé, nous utilisons une seed fixe pour les simulations
+    // Cela garantit la reproductibilité des résultats
+    let paths, monthlyIndices;
+    
+    if (useClosedForm) {
+      // Nous utilisons la fonction avec une seed fixe pour garantir des résultats identiques à chaque fois
+      const fixedSeed = 12345;
+      
+      // Fonction pour générer des nombres pseudo-aléatoires avec une seed
+      const seededRandom = (() => {
+        let seed = fixedSeed;
+        return () => {
+          seed = (seed * 9301 + 49297) % 233280;
+          return seed / 233280;
+        };
+      })();
+      
+      // Override temporaire de Math.random
+      const originalRandom = Math.random;
+      Math.random = seededRandom;
+      
+      // Générer les chemins de prix avec la seed fixe
+      const result = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
+      paths = result.paths;
+      monthlyIndices = result.monthlyIndices;
+      
+      // Restaurer la fonction Math.random originale
+      Math.random = originalRandom;
+    } else {
+      // En mode Monte Carlo normal, nous utilisons des chemins aléatoires
+      const result = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
+      paths = result.paths;
+      monthlyIndices = result.monthlyIndices;
     }
-
-    // Generate price paths for the entire period
-    const { paths, monthlyIndices } = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
 
     // If simulation is enabled, generate new real prices using the first path
     if (realPriceParams.useSimulation) {
@@ -1099,11 +1183,10 @@ const Index = () => {
     // Update visualization data with the calculated paths
     setSimulationData({
       realPricePaths,
-      barrierOptionPricePaths,
       timeLabels,
       strategyName: barrierOptions.length > 0 
-        ? `${barrierOptions[0].type} à ${barrierOptions[0].strike}` 
-        : 'Stratégie actuelle',
+        ? `${barrierOptions[0].type} at ${barrierOptions[0].strike}` 
+        : 'Current Strategy',
     });
 
     // Continue with the rest of calculateResults
@@ -1111,8 +1194,6 @@ const Index = () => {
       const diffTime = Math.abs(date.getTime() - startDate.getTime());
       return diffTime / (365.25 * 24 * 60 * 60 * 1000);
     });
-
-    const monthlyVolume = params.totalVolume / params.monthsToHedge;
 
     // Suivi des options knocked out
     const knockedOutOptions = new Set();
@@ -1241,7 +1322,14 @@ const Index = () => {
       }
     });
 
+    // Generate detailed results for each period with the corresponding monthly volume
     const detailedResults = months.map((date, i) => {
+      // Use the monthly volume from our array instead of dividing total volume
+      const monthlyVolume = monthlyVolumes[i];
+      
+      const t = timeToMaturities[i];
+      const maturityIndex = monthlyIndices[i]; // Add the maturityIndex definition
+      
       // Get forward price
         const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       const forward = (() => {
@@ -1252,9 +1340,6 @@ const Index = () => {
 
       // Get real price
       const realPrice = realPrices[monthKey] || forward;
-
-      const t = timeToMaturities[i];
-      const maturityIndex = monthlyIndices[i];
 
       // Calculer le prix du swap une fois pour tous les swaps
         const swapPrice = calculateSwapPrice(
@@ -1673,7 +1758,7 @@ const Index = () => {
     if (!results || !payoffData) return;
 
     const scenario: SavedScenario = {
-      id: crypto.randomUUID(),
+      id: uuidv4(),
       name: `Scenario ${new Date().toLocaleDateString()}`,
       timestamp: Date.now(),
       params,
@@ -1738,7 +1823,9 @@ const Index = () => {
       monthsToHedge: 12,
       interestRate: 2.0,
       totalVolume: 1000000,
-      spotPrice: 100
+      spotPrice: 100,
+      useCustomPeriods: false,
+      customPeriods: []
     });
     setStrategy([]);
     setResults(null);
@@ -1844,7 +1931,9 @@ const Index = () => {
         monthsToHedge: 12,
         interestRate: 2.0,
         totalVolume: 1000000,
-        spotPrice: 100
+        spotPrice: 100,
+        useCustomPeriods: false,
+        customPeriods: []
       },
       strategy: [],
       results: null,
@@ -1900,6 +1989,17 @@ const Index = () => {
       unit: 'px',
       compress: true
     });
+
+    // Define PDF options
+    const options = {
+      margin: [10, 10, 10, 10],
+      autoPaging: 'text'as "text",
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        logging: false
+      }
+    };
 
     // Create a temporary div for PDF content
     const tempDiv = document.createElement('div');
@@ -2621,7 +2721,7 @@ const Index = () => {
     if (!name) return;
 
     const newMatrix: SavedRiskMatrix = {
-      id: Date.now().toString(),
+      id: uuidv4(),
       name,
       timestamp: Date.now(),
       priceRanges: [...priceRanges],
@@ -2762,7 +2862,7 @@ const Index = () => {
 
     // Créer un nouvel objet scénario
     const newScenario: SavedScenario = {
-      id: Date.now().toString(),
+      id: uuidv4(),
       name: scenarioName,
       timestamp: Date.now(),
       params: {...params},
@@ -2806,6 +2906,17 @@ const Index = () => {
     // Configurer jsPDF
     const doc = new jsPDF('p', 'mm', 'a4');
     const pageWidth = doc.internal.pageSize.getWidth();
+    
+    // Define options for PDF export
+    const options = {
+      margin: [10, 10, 10, 10],
+      autoPaging: 'text',
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        logging: false
+      }
+    };
     
     // Titre
     doc.setFontSize(18);
@@ -3044,7 +3155,19 @@ const Index = () => {
 
     // Récupérer les mois et date de début pour les simulations
     const startDate = new Date(params.startDate);
-    const months = [];
+    let months = [];
+    
+    // Check if using custom periods
+    if (params.useCustomPeriods && params.customPeriods.length > 0) {
+      // Sort custom periods by maturity date
+      const sortedPeriods = [...params.customPeriods].sort(
+        (a, b) => new Date(a.maturityDate).getTime() - new Date(b.maturityDate).getTime()
+      );
+      
+      // Use the maturity dates from custom periods
+      months = sortedPeriods.map(period => new Date(period.maturityDate));
+    } else {
+      // Use the standard month generation logic
     let currentDate = new Date(startDate);
 
     const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
@@ -3057,6 +3180,7 @@ const Index = () => {
     for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
       currentDate.setMonth(currentDate.getMonth() + 1);
       months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+      }
     }
 
     // Générer les chemins de prix pour toute la période seulement si la simulation est activée
@@ -3189,11 +3313,10 @@ const Index = () => {
     // Mettre à jour les données de visualisation avec les chemins calculés
     setSimulationData({
       realPricePaths,
-      barrierOptionPricePaths,
       timeLabels,
       strategyName: barrierOptions.length > 0 
-        ? `${barrierOptions[0].type} à ${barrierOptions[0].strike}` 
-        : 'Stratégie actuelle',
+        ? `${barrierOptions[0].type} at ${barrierOptions[0].strike}` 
+        : 'Current Strategy',
     });
 
     setIsRunningSimulation(false);
@@ -3220,10 +3343,321 @@ const Index = () => {
     if (results) {
       recalculateMonteCarloSimulations();
     }
-  }, [realPriceParams.useSimulation, recalculateMonteCarloSimulations, results, 
-      // Aussi recalculer quand la stratégie change pour les options à barrière
-      strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin'))
-    ]);
+  }, [realPriceParams.useSimulation, recalculateMonteCarloSimulations, results]);
+  
+  // Function to add a new custom period
+  const addCustomPeriod = () => {
+    // Calculate a default maturity date one month from the start date
+    const startDate = new Date(params.startDate);
+    startDate.setMonth(startDate.getMonth() + params.customPeriods.length + 1);
+    
+    // Create a new custom period with default values
+    const newPeriod: CustomPeriod = {
+      maturityDate: startDate.toISOString().split('T')[0],
+      volume: Math.round(params.totalVolume / (params.customPeriods.length + 1))
+    };
+    
+    // Update the params with the new period
+    setParams({
+      ...params,
+      customPeriods: [...params.customPeriods, newPeriod]
+    });
+  };
+  
+  // Function to remove a custom period
+  const removeCustomPeriod = (index: number) => {
+    const updatedPeriods = [...params.customPeriods];
+    updatedPeriods.splice(index, 1);
+    
+    setParams({
+      ...params,
+      customPeriods: updatedPeriods
+    });
+  };
+  
+  // Function to update a custom period
+  const updateCustomPeriod = (index: number, field: keyof CustomPeriod, value: string | number) => {
+    const updatedPeriods = [...params.customPeriods];
+    updatedPeriods[index] = {
+      ...updatedPeriods[index],
+      [field]: value
+    };
+    
+    setParams({
+      ...params,
+      customPeriods: updatedPeriods
+    });
+  };
+  
+  // Function to toggle between using standard months or custom periods
+  const toggleCustomPeriods = () => {
+    // If switching to custom periods for the first time, initialize with one period
+    if (!params.useCustomPeriods && params.customPeriods.length === 0) {
+      const startDate = new Date(params.startDate);
+      startDate.setMonth(startDate.getMonth() + 1);
+      
+      setParams({
+        ...params,
+        useCustomPeriods: !params.useCustomPeriods,
+        customPeriods: [
+          {
+            maturityDate: startDate.toISOString().split('T')[0],
+            volume: params.totalVolume
+          }
+        ]
+      });
+    } else {
+      setParams({
+        ...params,
+        useCustomPeriods: !params.useCustomPeriods
+      });
+    }
+    
+    // Recalculate results if they exist
+    if (results) {
+      recalculateResults();
+    }
+  };
+
+  // Ajouter dans l'état de l'application
+  const [useClosedForm, setUseClosedForm] = useState(false);
+  
+  // Ajouter les fonctions de calcul en forme fermée pour les options à barrière
+  /**
+   * Calcule la fonction de répartition normale standard (cumulative distribution function)
+   */
+  const normalCDF = (x: number): number => {
+    return 0.5 * (1 + erf(x / Math.sqrt(2)));
+  };
+
+  /**
+   * Calcule la densité de la loi normale standard (probability density function)
+   */
+  const normalPDF = (x: number): number => {
+    return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+  };
+
+  /**
+   * Calcule le prix d'une option Call Down-and-Out en utilisant la formule en forme fermée
+   */
+  const calculateDownAndOutCallPrice = (
+    S: number,      // Spot price
+    K: number,      // Strike price
+    r: number,      // Risk-free rate
+    t: number,      // Time to maturity in years
+    sigma: number,  // Volatility
+    H: number       // Barrier (must be below spot price)
+  ): number => {
+    if (H >= S) {
+      throw new Error("Pour Down-and-Out Call, la barrière doit être inférieure au prix spot");
+    }
+
+    // Si la barrière est déjà touchée (S <= H), l'option est déjà knockout
+    if (S <= H) {
+      return 0;
+    }
+
+    // Paramètres pour la formule
+    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
+    const y = Math.log(H * H / (S * K)) / (sigma * Math.sqrt(t));
+    const x1 = Math.log(S / K) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    const x2 = Math.log(S / H) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    const y1 = Math.log(H / S) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    const y2 = Math.log(H / K) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+
+    // La formule pour vanilla call
+    const vanilla = S * normalCDF(x1) - K * Math.exp(-r * t) * normalCDF(x1 - sigma * Math.sqrt(t));
+    
+    // Correction pour la barrière
+    const correction = S * Math.pow(H / S, 2 * lambda) * normalCDF(y1) - 
+                      K * Math.exp(-r * t) * Math.pow(H / S, 2 * lambda - 2) * normalCDF(y1 - sigma * Math.sqrt(t));
+    
+    return vanilla - correction;
+  };
+
+  /**
+   * Calcule le prix d'une option Call Up-and-Out en utilisant la formule en forme fermée
+   */
+  const calculateUpAndOutCallPrice = (
+    S: number,      // Spot price
+    K: number,      // Strike price
+    r: number,      // Risk-free rate
+    t: number,      // Time to maturity in years
+    sigma: number,  // Volatility
+    H: number       // Barrier (must be above spot price and strike)
+  ): number => {
+    if (H <= S) {
+      throw new Error("Pour Up-and-Out Call, la barrière doit être supérieure au prix spot");
+    }
+    
+    if (H <= K) {
+      throw new Error("Pour Up-and-Out Call, la barrière doit être supérieure au strike");
+    }
+
+    // Si la barrière est déjà touchée (S >= H), l'option est déjà knockout
+    if (S >= H) {
+      return 0;
+    }
+
+    // Calcul du vanilla call
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const call = S * normalCDF(d1) - K * Math.exp(-r * t) * normalCDF(d2);
+
+    // Paramètres pour la correction de barrière
+    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
+    const mu = 2 * r / (sigma * sigma);
+    
+    const x1 = Math.log(S / H) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    const y1 = Math.log(H * H / (S * K)) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    
+    // Termes de la correction
+    const term1 = S * Math.pow(H / S, 2 * lambda) * normalCDF(x1);
+    const term2 = K * Math.exp(-r * t) * Math.pow(H / S, 2 * lambda - 2) * normalCDF(x1 - sigma * Math.sqrt(t));
+    
+    // Prix final
+    return call - (term1 - term2);
+  };
+
+  /**
+   * Calcule le prix d'une option Put Down-and-Out en utilisant la formule en forme fermée
+   */
+  const calculateDownAndOutPutPrice = (
+    S: number,      // Spot price
+    K: number,      // Strike price
+    r: number,      // Risk-free rate
+    t: number,      // Time to maturity in years
+    sigma: number,  // Volatility
+    H: number       // Barrier (must be below spot price and strike)
+  ): number => {
+    if (H >= S) {
+      throw new Error("Pour Down-and-Out Put, la barrière doit être inférieure au prix spot");
+    }
+    
+    if (H >= K) {
+      throw new Error("Pour Down-and-Out Put, la barrière doit être inférieure au strike");
+    }
+
+    // Si la barrière est déjà touchée (S <= H), l'option est déjà knockout
+    if (S <= H) {
+      return 0;
+    }
+
+    // Calcul du vanilla put
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
+
+    // Paramètres pour la correction de barrière
+    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
+    
+    // Termes de correction
+    const x1 = Math.log(S / H) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    const y1 = Math.log(H * H / (S * K)) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+
+    // Application de la formule pour Down-and-Out Put
+    const term1 = K * Math.exp(-r * t) * Math.pow(H / S, 2 * lambda - 2) * normalCDF(x1 - sigma * Math.sqrt(t));
+    const term2 = S * Math.pow(H / S, 2 * lambda) * normalCDF(x1);
+
+    return put - (term1 - term2);
+  };
+
+  /**
+   * Calcule le prix d'une option Put Up-and-Out en utilisant la formule en forme fermée
+   */
+  const calculateUpAndOutPutPrice = (
+    S: number,      // Spot price
+    K: number,      // Strike price
+    r: number,      // Risk-free rate
+    t: number,      // Time to maturity in years
+    sigma: number,  // Volatility
+    H: number       // Barrier (must be above spot price)
+  ): number => {
+    if (H <= S) {
+      throw new Error("Pour Up-and-Out Put, la barrière doit être supérieure au prix spot");
+    }
+
+    // Si la barrière est déjà touchée (S >= H), l'option est déjà knockout
+    if (S >= H) {
+      return 0;
+    }
+
+    // Calcul du vanilla put
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
+
+    // Paramètres pour la formule
+    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
+    
+    // Put Up-and-Out est plus simple car il ne nécessite pas d'ajustements complexes 
+    // si la barrière est au-dessus du strike
+    return put;
+  };
+
+  /**
+   * Calcule le prix d'une option Call Down-and-In en utilisant la relation In + Out = Vanilla
+   */
+  const calculateDownAndInCallPrice = (
+    S: number, K: number, r: number, t: number, sigma: number, H: number
+  ): number => {
+    // Calcul du prix vanilla
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const call = S * normalCDF(d1) - K * Math.exp(-r * t) * normalCDF(d2);
+    
+    // Down-and-In = Vanilla - Down-and-Out
+    const downAndOut = calculateDownAndOutCallPrice(S, K, r, t, sigma, H);
+    return call - downAndOut;
+  };
+
+  /**
+   * Calcule le prix d'une option Call Up-and-In en utilisant la relation In + Out = Vanilla
+   */
+  const calculateUpAndInCallPrice = (
+    S: number, K: number, r: number, t: number, sigma: number, H: number
+  ): number => {
+    // Calcul du prix vanilla
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const call = S * normalCDF(d1) - K * Math.exp(-r * t) * normalCDF(d2);
+    
+    // Up-and-In = Vanilla - Up-and-Out
+    const upAndOut = calculateUpAndOutCallPrice(S, K, r, t, sigma, H);
+    return call - upAndOut;
+  };
+
+  /**
+   * Calcule le prix d'une option Put Down-and-In en utilisant la relation In + Out = Vanilla
+   */
+  const calculateDownAndInPutPrice = (
+    S: number, K: number, r: number, t: number, sigma: number, H: number
+  ): number => {
+    // Calcul du prix vanilla
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
+    
+    // Down-and-In = Vanilla - Down-and-Out
+    const downAndOut = calculateDownAndOutPutPrice(S, K, r, t, sigma, H);
+    return put - downAndOut;
+  };
+
+  /**
+   * Calcule le prix d'une option Put Up-and-In en utilisant la relation In + Out = Vanilla
+   */
+  const calculateUpAndInPutPrice = (
+    S: number, K: number, r: number, t: number, sigma: number, H: number
+  ): number => {
+    // Calcul du prix vanilla
+    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    const d2 = d1 - sigma * Math.sqrt(t);
+    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
+    
+    // Up-and-In = Vanilla - Up-and-Out
+    const upAndOut = calculateUpAndOutPutPrice(S, K, r, t, sigma, H);
+    return put - upAndOut;
+  };
 
   return (
     <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
@@ -3272,98 +3706,245 @@ const Index = () => {
         </TabsList>
         
         <TabsContent value="parameters">
-          <Card>
-            <CardHeader>
-              <CardTitle>Options Strategy Parameters</CardTitle>
+          <Card className="shadow-md">
+            <CardHeader className="pb-2 border-b">
+              <CardTitle className="text-xl font-bold text-primary">Options Strategy Parameters</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Start Date</label>
+            <CardContent className="pt-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="compact-form-group">
+                  <label className="compact-label">Start Date</label>
                   <Input
                     type="date"
                     value={params.startDate}
                     onChange={(e) => setParams({...params, startDate: e.target.value})}
+                    className="compact-input"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Months to Hedge</label>
+                <div className="compact-form-group">
+                  <label className="compact-label">Months to Hedge</label>
+                  <div className="flex items-center gap-2">
+                    <Slider 
+                      value={[params.monthsToHedge]} 
+                      min={1} 
+                      max={36} 
+                      step={1}
+                      onValueChange={(value) => setParams({...params, monthsToHedge: value[0]})}
+                      className="flex-1"
+                    />
                   <Input
                     type="number"
                     value={params.monthsToHedge}
                     onChange={(e) => setParams({...params, monthsToHedge: Number(e.target.value)})}
+                      className="compact-input w-16 text-center"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Interest Rate (%)</label>
+                </div>
+                <div className="compact-form-group">
+                  <label className="compact-label">Interest Rate (%)</label>
+                  <div className="flex items-center gap-2">
+                    <Slider 
+                      value={[params.interestRate]} 
+                      min={0} 
+                      max={10} 
+                      step={0.1}
+                      onValueChange={(value) => setParams({...params, interestRate: value[0]})}
+                      className="flex-1"
+                    />
                   <Input
                     type="number"
                     value={params.interestRate}
                     onChange={(e) => setParams({...params, interestRate: Number(e.target.value)})}
+                      className="compact-input w-16 text-center"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Total Volume</label>
+                </div>
+                <div className="compact-form-group">
+                  <label className="compact-label">Total Volume</label>
                   <Input
                     type="number"
                     value={params.totalVolume}
                     onChange={(e) => setParams({...params, totalVolume: Number(e.target.value)})}
+                    className="compact-input"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Spot Price</label>
+                <div className="compact-form-group">
+                  <label className="compact-label">Spot Price</label>
                   <Input
                     type="number"
                     value={params.spotPrice}
                     onChange={(e) => handleSpotPriceChange(Number(e.target.value))}
+                    className="compact-input"
                   />
                 </div>
               </div>
 
-              <div className="mt-6">
-                <h3 className="text-lg font-medium mb-4">Real Price Simulation</h3>
-                <div className="flex items-center mb-4">
-                  <input
-                    type="checkbox"
-                    checked={realPriceParams.useSimulation}
-                    onChange={(e) => setRealPriceParams(prev => ({...prev, useSimulation: e.target.checked}))}
-                    className="mr-2"
+              <div className="mt-6 pb-4 border-b">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={params.useCustomPeriods}
+                    onCheckedChange={toggleCustomPeriods}
+                    id="useCustomPeriods"
                   />
-                  <label>Use Monte Carlo Simulation</label>
+                  <label htmlFor="useCustomPeriods" className="text-sm font-medium cursor-pointer">
+                    Use Custom Periods Instead of Monthly Hedging
+                  </label>
                 </div>
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-1">Number of Simulations for Barrier Options</label>
-                  <Input
-                    type="number"
-                    value={realPriceParams.numSimulations}
-                    onChange={(e) => setRealPriceParams(prev => ({...prev, numSimulations: Number(e.target.value)}))}
-                    min="100"
-                    max="10000"
-                    step="100"
-                  />
-                </div>
-                <div className="flex items-center mb-4">
-                  <input
-                    type="checkbox"
-                    checked={useImpliedVol}
-                    onChange={(e) => setUseImpliedVol(e.target.checked)}
-                    className="mr-2"
-                  />
-                  <label>Use Monthly Implied Volatility</label>
+                
+                {params.useCustomPeriods && (
+                  <div className="mt-4 pl-8">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="text-sm font-medium text-foreground/90">Custom Hedging Periods</h4>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={addCustomPeriod}
+                        className="flex items-center gap-1 h-8 px-2 text-xs"
+                      >
+                        <Plus size={14} /> Add Period
+                      </Button>
                     </div>
+                    
+                    {params.customPeriods.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No custom periods defined. Click "Add Period" to create one.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {params.customPeriods.map((period, index) => (
+                          <div key={index} className="grid grid-cols-5 gap-2 items-center p-2 rounded-md bg-muted/50">
+                            <div className="col-span-2">
+                              <label className="compact-label">Maturity Date</label>
+                              <Input
+                                type="date"
+                                value={period.maturityDate}
+                                onChange={(e) => updateCustomPeriod(index, 'maturityDate', e.target.value)}
+                                className="compact-input"
+                              />
+                            </div>
+                            <div className="col-span-2">
+                              <label className="compact-label">Volume</label>
+                              <Input
+                                type="number"
+                                value={period.volume}
+                                onChange={(e) => updateCustomPeriod(index, 'volume', Number(e.target.value))}
+                                className="compact-input"
+                              />
+                            </div>
+                            <div className="flex items-end justify-end">
+                              <Button 
+                                variant="ghost" 
+                                size="icon"
+                                onClick={() => removeCustomPeriod(index)}
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10 h-8 w-8"
+                              >
+                                <X size={14} />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                        
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Total Volume: {params.customPeriods.reduce((sum, p) => sum + p.volume, 0).toLocaleString()}
+                        </div>
+                        
+                        {Math.abs(params.customPeriods.reduce((sum, p) => sum + p.volume, 0) - params.totalVolume) > 0.01 && (
+                          <div className="mt-2 text-xs text-amber-600 flex items-center gap-1">
+                            <AlertTriangle size={12} />
+                            <span>The sum of custom periods volumes ({params.customPeriods.reduce((sum, p) => sum + p.volume, 0).toLocaleString()}) 
+                            differs from the total volume ({params.totalVolume.toLocaleString()}).</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4">
+                <h3 className="text-base font-medium mb-3 text-primary">Real Price Simulation</h3>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={realPriceParams.useSimulation}
+                      onCheckedChange={(checked) => setRealPriceParams(prev => ({...prev, useSimulation: checked}))}
+                      id="useMonteCarloSimulation"
+                    />
+                    <label htmlFor="useMonteCarloSimulation" className="text-sm font-medium cursor-pointer">
+                      Use Monte Carlo Simulation
+                    </label>
+                  </div>
+                  
+                  {realPriceParams.useSimulation && (
+                    <div className="compact-form-group pl-8">
+                      <label className="compact-label">Number of Simulations</label>
+                      <div className="flex items-center gap-2">
+                        <Slider 
+                          value={[realPriceParams.numSimulations]} 
+                          min={100} 
+                          max={10000} 
+                          step={100}
+                          onValueChange={(value) => setRealPriceParams(prev => ({...prev, numSimulations: value[0]}))}
+                          className="flex-1"
+                        />
+                        <Input
+                          type="number"
+                          value={realPriceParams.numSimulations}
+                          onChange={(e) => setRealPriceParams(prev => ({...prev, numSimulations: Number(e.target.value)}))}
+                          min="100"
+                          max="10000"
+                          step="100"
+                          className="compact-input w-20 text-center"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={useClosedForm}
+                      onCheckedChange={(checked) => {
+                        setUseClosedForm(checked);
+                        // Désactiver Monte Carlo si Closed-Form est activé
+                        if (checked) {
+                          setRealPriceParams(prev => ({...prev, useSimulation: false}));
+                        }
+                      }}
+                      id="useClosedForm"
+                      disabled={strategy.some(opt => opt.type.includes('double') || opt.type.includes('reverse'))}
+                    />
+                    <label htmlFor="useClosedForm" className="text-sm font-medium cursor-pointer">
+                      Use Closed-Form Solutions for Barrier Options
+                    </label>
+                    {strategy.some(opt => opt.type.includes('double') || opt.type.includes('reverse')) && (
+                      <span className="text-xs text-amber-600 ml-2">
+                        (Not available for double or reverse barriers)
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={useImpliedVol}
+                      onCheckedChange={(checked) => setUseImpliedVol(checked)}
+                      id="useImpliedVol"
+                    />
+                    <label htmlFor="useImpliedVol" className="text-sm font-medium cursor-pointer">
+                      Use Monthly Implied Volatility
+                    </label>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Strategy Components</CardTitle>
+          <Card className="shadow-md mt-4">
+            <CardHeader className="pb-2 border-b flex flex-row items-center justify-between">
+              <CardTitle className="text-xl font-bold text-primary">Strategy Components</CardTitle>
               <div className="flex gap-2">
-              <Button onClick={addOption} className="flex items-center gap-2">
-                <Plus size={16} /> Add Option
+                <Button onClick={addOption} size="sm" className="h-8 px-3 text-sm flex items-center gap-1">
+                  <Plus size={14} /> Add Option
               </Button>
-                <Button onClick={addSwap} className="flex items-center gap-2">
-                  <Plus size={16} /> Add Swap
+                <Button onClick={addSwap} size="sm" variant="outline" className="h-8 px-3 text-sm flex items-center gap-1">
+                  <Plus size={14} /> Add Swap
                 </Button>
               </div>
             </CardHeader>
@@ -4053,61 +4634,69 @@ const Index = () => {
 
       {results && (
         <>
-          <Card>
-            <CardHeader>
-              <CardTitle>Detailed Results</CardTitle>
+          <Card className="shadow-lg border border-border/40 overflow-hidden">
+            <CardHeader className="bg-gradient-to-r from-primary/10 to-transparent pb-3 border-b">
+              <CardTitle className="text-xl font-bold text-primary flex items-center gap-2">
+                <Table className="h-5 w-5" />
+                Detailed Results
+              </CardTitle>
             </CardHeader>
-            <CardContent>
-              
-
+            <CardContent className="p-0">
               {results.length > 0 && (
-                <div className="mb-8">
-                  
-                  
-                  <div className="flex items-center mb-4">
-                    <input
+                <div>
+                  <div className="flex items-center p-4 bg-muted/30">
+                    <div className="flex items-center">
+                      <Switch
                       id="useCustomPrices"
-                      type="checkbox"
-                      className="mr-2"
                       checked={useCustomOptionPrices}
-                      onChange={(e) => setUseCustomOptionPrices(e.target.checked)}
+                        onCheckedChange={(checked) => setUseCustomOptionPrices(checked)}
+                        className="mr-2"
                     />
-                    <label htmlFor="useCustomPrices" className="cursor-pointer">
+                      <label htmlFor="useCustomPrices" className="text-sm font-medium cursor-pointer">
                       Use my own prices
                     </label>
+                    </div>
                   </div>
                   
-              <div className="overflow-x-auto">
-                <table className="min-w-full border-collapse">
+                  <div className="custom-scrollbar">
+                    <table className="w-full">
                   <thead>
-                    <tr>
-                      <th className="border p-2">Maturity</th>
-                      <th className="border p-2">Time to Maturity</th>
-                      <th className="border p-2 bg-gray-50">Forward Price</th>
-                      <th className="border p-2 bg-blue-50">Real Price</th>
+                        <tr className="bg-muted/50 text-xs uppercase tracking-wider">
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Maturity</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Time to Maturity</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-blue-500/5">Forward Price</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/5">Real Price</th>
                       {useImpliedVol && (
-                        <th className="border p-2 bg-yellow-50">IV (%)</th>
+                            <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">IV (%)</th>
                       )}
                       {results[0].optionPrices.map((opt, i) => (
-                        <th key={`opt-header-${i}`} className="border p-2">{opt.label}</th>
-                      ))}
-                      <th className="border p-2">Strategy Price</th>
-                      <th className="border p-2">Strategy Payoff</th>
-                      <th className="border p-2">Volume</th>
-                      <th className="border p-2">Hedged Cost</th>
-                      <th className="border p-2">Unhedged Cost</th>
-                      <th className="border p-2">Delta P&L</th>
+                            <th key={`opt-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b">{opt.label}</th>
+                          ))}
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-green-500/5">Strategy Price</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-purple-500/5">Strategy Payoff</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Volume</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-green-500/5">Hedged Cost</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-red-500/5">Unhedged Cost</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-indigo-500/5">Delta P&L</th>
                     </tr>
                   </thead>
                   <tbody>
                     {results.map((row, i) => {
                       const date = new Date(row.date);
                       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                          const isEven = i % 2 === 0;
+                          
+                          const getPnLColor = (value: number) => {
+                            if (value > 0) return 'text-green-600';
+                            if (value < 0) return 'text-red-600';
+                            return '';
+                          };
+                          
                       return (
-                      <tr key={i}>
-                        <td className="border p-2">{row.date}</td>
-                        <td className="border p-2">{row.timeToMaturity.toFixed(4)}</td>
-                        <td className="border p-2">
+                            <tr key={i} className={`${isEven ? 'bg-muted/20' : 'bg-background'} hover:bg-muted/40 transition-colors`}>
+                              <td className="px-3 py-2 text-sm border-b border-border/30">{row.date}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30">{row.timeToMaturity.toFixed(4)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-blue-500/5">
                           <Input
                             type="number"
                               value={(() => {
@@ -4125,11 +4714,11 @@ const Index = () => {
                               }));
                             }}
                             onBlur={() => calculateResults()}
-                            className="w-32 text-right"
+                                  className="compact-input w-32 text-right"
                             step="0.01"
                           />
                         </td>
-                        <td className="border p-2">
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-primary/5">
                           <Input
                             type="number"
                               value={(() => {
@@ -4149,19 +4738,19 @@ const Index = () => {
                               }));
                             }}
                             onBlur={() => calculateResults()}
-                            className="w-32 text-right"
+                                  className="compact-input w-32 text-right"
                             step="0.01"
                             disabled={realPriceParams.useSimulation}
                           />
                         </td>
                           {useImpliedVol && (
-                            <td className="border p-2">
+                                <td className="px-3 py-2 text-sm border-b border-border/30 bg-amber-500/5">
                               <Input
                                 type="number"
                                 value={impliedVolatilities[monthKey] || ''}
                                 onChange={(e) => handleImpliedVolChange(monthKey, Number(e.target.value))}
                                 onBlur={() => calculateResults()}
-                                className="w-24"
+                                    className="compact-input w-24"
                                 placeholder="Enter IV"
                               />
                             </td>
@@ -4182,7 +4771,7 @@ const Index = () => {
                                       : opt.price;
                                   
                                   return (
-                                    <td key={`swap-${j}`} className="border p-2">
+                                    <td key={`swap-${j}`} className="px-3 py-2 text-sm border-b border-border/30">
                                       {useCustomOptionPrices ? (
                                         <Input
                                           type="number"
@@ -4199,11 +4788,11 @@ const Index = () => {
                                             }));
                                           }}
                                           onBlur={() => recalculateResults()}
-                                          className="w-24 text-right"
+                                          className="compact-input w-24 text-right"
                                           step="0.01"
                                         />
                                       ) : (
-                                        opt.price.toFixed(2)
+                                        <span className="font-mono">{opt.price.toFixed(2)}</span>
                                       )}
                                     </td>
                                   );
@@ -4224,7 +4813,7 @@ const Index = () => {
                                       : opt.price;
                                   
                                   return (
-                                    <td key={`option-${j}`} className="border p-2">
+                                    <td key={`option-${j}`} className="px-3 py-2 text-sm border-b border-border/30">
                                       {useCustomOptionPrices ? (
                                         <Input
                                           type="number"
@@ -4241,18 +4830,18 @@ const Index = () => {
                                             }));
                                           }}
                                           onBlur={() => recalculateResults()}
-                                          className="w-24 text-right"
+                                          className="compact-input w-24 text-right"
                                           step="0.01"
                                         />
                                       ) : (
-                                        opt.price.toFixed(2)
+                                        <span className="font-mono">{opt.price.toFixed(2)}</span>
                                       )}
                                     </td>
                                   );
                                 })}
-                        <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
-                        <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
-                        <td className="border p-2">
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-green-500/5 font-medium font-mono">{row.strategyPrice.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-purple-500/5 font-medium font-mono">{row.totalPayoff.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30">
                           <Input
                             type="number"
                             value={(() => {
@@ -4267,13 +4856,15 @@ const Index = () => {
                               handleVolumeChange(monthKey, newValue);
                             }}
                             onBlur={() => recalculateResults()}
-                            className="w-32 text-right"
+                                  className="compact-input w-32 text-right"
                             step="1"
                           />
                         </td>
-                        <td className="border p-2">{row.hedgedCost.toFixed(2)}</td>
-                        <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
-                        <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-green-500/5 font-medium font-mono">{row.hedgedCost.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-red-500/5 font-medium font-mono">{row.unhedgedCost.toFixed(2)}</td>
+                              <td className={`px-3 py-2 text-sm border-b border-border/30 bg-indigo-500/5 font-medium font-mono ${getPnLColor(row.deltaPnL)}`}>
+                                {row.deltaPnL.toFixed(2)}
+                              </td>
                       </tr>
                       );
                     })}
@@ -4443,11 +5034,6 @@ const Index = () => {
                       {realPriceParams.useSimulation && simulationData.realPricePaths.length > 0 && (
                         <li>Real Price Paths: Shows simulated price paths based on the volatility parameters</li>
                       )}
-                      {strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) ? (
-                        <li>Option Price Paths: Shows the evolution of barrier option prices over time</li>
-                      ) : (
-                        <li className="text-gray-500">Option Price Paths: Not available (requires barrier options in your strategy)</li>
-                      )}
                     </ul>
                   </div>
                   
@@ -4455,20 +5041,11 @@ const Index = () => {
                     simulationData={{
                       ...simulationData,
                       // S'assurer que nous avons toujours les bonnes données pour les chemins d'options à barrière
-                      barrierOptionPricePaths: 
-                        strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) 
-                          ? simulationData.barrierOptionPricePaths 
-                          : []
+                      
                     }} 
                   />
                   
-                  {!strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) && (
-                    <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-800">
-                      <p className="font-medium">Option Price Paths Unavailable</p>
-                      <p>Option Price Paths visualization is only available when your strategy includes barrier options (Knock-in/Knock-out).</p>
-                      <p className="mt-1">Add a barrier option to your strategy to enable this visualization.</p>
-                    </div>
-                  )}
+                  
                 </div>
               )}
               

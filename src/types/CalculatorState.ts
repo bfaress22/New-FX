@@ -1,3 +1,8 @@
+export interface CustomPeriod {
+  maturityDate: string;
+  volume: number;
+}
+
 export interface CalculatorState {
     params: {
       startDate: string;
@@ -5,6 +10,8 @@ export interface CalculatorState {
       interestRate: number;
       totalVolume: number;
       spotPrice: number;
+      useCustomPeriods: boolean;
+      customPeriods: CustomPeriod[];
     };
     strategy: any[];
     results: any;

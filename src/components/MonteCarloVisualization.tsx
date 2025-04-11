@@ -2,10 +2,10 @@ import React, { useEffect, useRef } from 'react';
 import Chart from 'chart.js/auto';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
+import { Download } from 'lucide-react';
 
 export interface SimulationData {
   realPricePaths: number[][];
-  barrierOptionPricePaths: number[][];
   timeLabels: string[];
   strategyName: string;
 }
@@ -16,9 +16,7 @@ interface MonteCarloVisualizationProps {
 
 const MonteCarloVisualization: React.FC<MonteCarloVisualizationProps> = ({ simulationData }) => {
   const realPriceChartRef = useRef<HTMLCanvasElement | null>(null);
-  const optionPriceChartRef = useRef<HTMLCanvasElement | null>(null);
   const realPriceChartInstance = useRef<Chart | null>(null);
-  const optionPriceChartInstance = useRef<Chart | null>(null);
 
   const getRandomColor = () => {
     const opacity = 0.2 + Math.random() * 0.3; // Random opacity between 0.2 and 0.5
@@ -61,11 +59,12 @@ const MonteCarloVisualization: React.FC<MonteCarloVisualizationProps> = ({ simul
         plugins: {
           title: {
             display: true,
-            text: 'Monte Carlo Simulation - Real Price Paths',
+            text: 'Monte Carlo Simulation - Price Paths',
             font: {
               size: 16,
               weight: 'bold',
             },
+            color: '#2563eb', // Match primary color
           },
           legend: {
             display: false,
@@ -73,6 +72,16 @@ const MonteCarloVisualization: React.FC<MonteCarloVisualizationProps> = ({ simul
           tooltip: {
             mode: 'index',
             intersect: false,
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            titleFont: {
+              size: 12,
+              weight: 'bold',
+            },
+            bodyFont: {
+              size: 11,
+            },
+            padding: 8,
+            cornerRadius: 6,
           },
         },
         scales: {
@@ -80,83 +89,28 @@ const MonteCarloVisualization: React.FC<MonteCarloVisualizationProps> = ({ simul
             title: {
               display: true,
               text: 'Time',
+              font: {
+                size: 12,
+                weight: 'normal',
+              },
+            },
+            grid: {
+              display: true,
+              color: 'rgba(0, 0, 0, 0.05)',
             },
           },
           y: {
             title: {
               display: true,
               text: 'Price',
+              font: {
+                size: 12,
+                weight: 'normal',
+              },
             },
-          },
-        },
-        animation: {
-          duration: 0, // Disable animation for better performance
-        },
-      },
-    });
-  };
-
-  const renderOptionPriceChart = () => {
-    if (!simulationData || !optionPriceChartRef.current || simulationData.barrierOptionPricePaths.length === 0) return;
-    
-    // Destroy existing chart if it exists
-    if (optionPriceChartInstance.current) {
-      optionPriceChartInstance.current.destroy();
-    }
-
-    const ctx = optionPriceChartRef.current.getContext('2d');
-    if (!ctx) return;
-
-    const datasets = simulationData.barrierOptionPricePaths.map((path, index) => {
-      const color = getRandomColor();
-      return {
-        label: `Path ${index + 1}`,
-        data: path,
-        borderColor: color,
-        borderWidth: 1,
-        fill: false,
-        pointRadius: 0,
-        showLine: true,
-      };
-    });
-
-    optionPriceChartInstance.current = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: simulationData.timeLabels,
-        datasets,
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          title: {
-            display: true,
-            text: 'Monte Carlo Simulation - Barrier Option Price Paths',
-            font: {
-              size: 16,
-              weight: 'bold',
-            },
-          },
-          legend: {
-            display: false,
-          },
-          tooltip: {
-            mode: 'index',
-            intersect: false,
-          },
-        },
-        scales: {
-          x: {
-            title: {
+            grid: {
               display: true,
-              text: 'Time',
-            },
-          },
-          y: {
-            title: {
-              display: true,
-              text: 'Option Price',
+              color: 'rgba(0, 0, 0, 0.05)',
             },
           },
         },
@@ -168,87 +122,57 @@ const MonteCarloVisualization: React.FC<MonteCarloVisualizationProps> = ({ simul
   };
 
   useEffect(() => {
-    if (simulationData) {
-      if (simulationData.realPricePaths.length > 0) {
-        renderRealPriceChart();
-      }
-      if (simulationData.barrierOptionPricePaths.length > 0) {
-        renderOptionPriceChart();
-      }
+    if (simulationData && simulationData.realPricePaths.length > 0) {
+      renderRealPriceChart();
     }
   }, [simulationData]);
 
   if (!simulationData) {
     return (
-      <Card className="w-full">
-        <CardHeader>
-          <CardTitle>Monte Carlo Simulation</CardTitle>
-          <CardDescription>No simulation data available. Run a simulation first.</CardDescription>
+      <Card className="w-full shadow-md border border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg font-semibold text-primary">Monte Carlo Simulation</CardTitle>
+          <CardDescription className="text-sm text-muted-foreground">No simulation data available. Run a simulation first.</CardDescription>
         </CardHeader>
       </Card>
     );
   }
 
   return (
-    <Card className="w-full">
-      <CardContent>
-        <div className="space-y-8">
-          {/* Real Price Paths Chart - Only shown if there are real price paths */}
-          {simulationData.realPricePaths.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Real Price Paths</h3>
-              <div style={{ height: '400px' }}>
-                <canvas ref={realPriceChartRef} />
-              </div>
+    <Card className="w-full shadow-md border border-border/60">
+      <CardHeader className="pb-2 border-b">
+        <CardTitle className="text-lg font-semibold text-primary">Monte Carlo Simulation - {simulationData.strategyName}</CardTitle>
+        <CardDescription className="text-sm text-muted-foreground">Visualization of price paths from Monte Carlo simulation</CardDescription>
+      </CardHeader>
+      <CardContent className="pt-4">
+        <div className="space-y-6">
+          <div>
+            <h3 className="text-sm font-medium mb-3 text-foreground/80">Price Paths</h3>
+            <div className="h-[400px] rounded-lg overflow-hidden bg-muted/20 p-2">
+              <canvas ref={realPriceChartRef} />
             </div>
-          )}
-          
-          {/* Barrier Option Price Paths Chart - Only shown if there are barrier option price paths */}
-          {simulationData.barrierOptionPricePaths.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Option Price Paths</h3>
-              <div style={{ height: '400px' }}>
-                <canvas ref={optionPriceChartRef} />
-              </div>
-            </div>
-          )}
+          </div>
 
-          {/* Download buttons - one for each visible chart */}
-          <div className="flex justify-end mt-4 gap-2">
-            {simulationData.realPricePaths.length > 0 && (
-              <Button 
-                onClick={() => {
-                  if (window.confirm('Download Real Price Paths chart as image?')) {
-                    if (realPriceChartRef.current) {
-                      const image = realPriceChartRef.current.toDataURL('image/png');
-                      const link = document.createElement('a');
-                      link.download = 'monte-carlo-real-price-paths.png';
-                      link.href = image;
-                      link.click();
-                    }
+          <div className="flex justify-end mt-2">
+            <Button 
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-1 text-xs"
+              onClick={() => {
+                if (window.confirm('Download Price Paths chart as image?')) {
+                  if (realPriceChartRef.current) {
+                    const image = realPriceChartRef.current.toDataURL('image/png');
+                    const link = document.createElement('a');
+                    link.download = 'monte-carlo-price-paths.png';
+                    link.href = image;
+                    link.click();
                   }
-                }}
-              >
-                Download Real Price Chart
-              </Button>
-            )}
-            {simulationData.barrierOptionPricePaths.length > 0 && (
-              <Button 
-                onClick={() => {
-                  if (window.confirm('Download Option Price Paths chart as image?')) {
-                    if (optionPriceChartRef.current) {
-                      const image = optionPriceChartRef.current.toDataURL('image/png');
-                      const link = document.createElement('a');
-                      link.download = 'monte-carlo-option-price-paths.png';
-                      link.href = image;
-                      link.click();
-                    }
-                  }
-                }}
-              >
-                Download Option Price Chart
-              </Button>
-            )}
+                }
+              }}
+            >
+              <Download size={14} />
+              Download Chart
+            </Button>
           </div>
         </div>
       </CardContent>
