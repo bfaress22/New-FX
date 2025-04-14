@@ -3961,6 +3961,21 @@ const Index = () => {
                     </div>
                   )}
                   
+                  <div className="flex items-center gap-2 pb-2">
+                    <Switch
+                    checked={useImpliedVol}
+                      onCheckedChange={setUseImpliedVol}
+                      id="useImpliedVol"
+                    />
+                    <label htmlFor="useImpliedVol" className="text-sm font-medium cursor-pointer">
+                      Use Implied Volatility
+                    </label>
+                    {useCustomOptionPrices && useImpliedVol && (
+                      <span className="bg-amber-100 text-amber-800 text-xs px-2 py-0.5 rounded-full">
+                        Calculé depuis les prix
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               
@@ -4748,8 +4763,8 @@ const Index = () => {
                       <label htmlFor="useCustomPrices" className="text-sm font-medium cursor-pointer">
                       Use my own prices
                     </label>
-                  </div>
-                  
+                    </div>
+                    
                     <div className="ml-4 flex items-center">
                       <Switch
                         id="useImpliedVolUI"
