@@ -24,6 +24,8 @@ export interface CalculatorState {
       drift: number;
       numSimulations: number;
     };
+    barrierOptionSimulations: number;
+    useClosedFormBarrier: boolean;
     activeTab: string;
     customScenario: any;
     stressTestScenarios: Record<string, any>;

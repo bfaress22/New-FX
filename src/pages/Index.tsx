@@ -220,14 +220,26 @@ const Index = () => {
   });
 
   // Real prices simulation parameters
-  const [realPriceParams, setRealPriceParams] = useState(() => {
-    const savedState = localStorage.getItem('calculatorState');
-    return savedState ? JSON.parse(savedState).realPriceParams : {
+  const [realPriceParams, setRealPriceParams] = useState<{
+    useSimulation: boolean;
+    volatility: number;
+    drift: number;
+    numSimulations: number;
+  }>({
       useSimulation: false,
       volatility: 0.3,
-      drift: 0.01,
+    drift: 0,
       numSimulations: 1000
-    };
+  });
+
+  const [barrierOptionSimulations, setBarrierOptionSimulations] = useState<number>(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).barrierOptionSimulations || 1000 : 1000;
+  });
+  
+  const [useClosedFormBarrier, setUseClosedFormBarrier] = useState<boolean>(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).useClosedFormBarrier || false : false;
   });
 
   // Month names in English
@@ -476,69 +488,41 @@ const Index = () => {
     secondBarrier?: number, // Second barrier for double barrier options
     numSimulations: number = 1000 // Number of simulations
   ) => {
-    // Vérifier si la méthode Closed-Form est activée et applicable pour ce type d'option
-    const canUseClosedForm = useClosedForm && 
-                             !secondBarrier && 
-                             !optionType.includes('reverse') && 
-                             !optionType.includes('double');
-    
-    if (canUseClosedForm) {
-      try {
-        // Déterminer si c'est un call ou un put
-        const isCall = optionType.includes('call');
-        const isKnockIn = optionType.includes('knockin');
+    // Generate a simple price path for this specific option
+      const numSteps = Math.max(252 * t, 50); // At least 50 steps
+      const dt = t / numSteps;
+      
+    // Generate paths for just this one option
+    const paths = [];
+    for (let i = 0; i < numSimulations; i++) {
+      const path = [S]; // Start with current price
+      
+      // Simulate price path
+      for (let step = 0; step < numSteps; step++) {
+        const previousPrice = path[path.length - 1];
+        // Generate random normal variable
+        const randomWalk = Math.random() * 2 - 1; // Simple approximation of normal distribution
         
-        // Déterminer si c'est une barrière haute ou basse
-        const isUpBarrier = barrier > S;
+        // Update price using geometric Brownian motion
+        const nextPrice = previousPrice * Math.exp(
+          (r - 0.5 * Math.pow(sigma, 2)) * dt + 
+          sigma * Math.sqrt(dt) * randomWalk
+        );
         
-        // Sélectionner la formule appropriée
-        let price = 0;
-        
-        if (isCall) {
-          if (isKnockIn) {
-            price = isUpBarrier ? 
-              calculateUpAndInCallPrice(S, K, r, t, sigma, barrier) : 
-              calculateDownAndInCallPrice(S, K, r, t, sigma, barrier);
-          } else { // Knock-Out
-            price = isUpBarrier ? 
-              calculateUpAndOutCallPrice(S, K, r, t, sigma, barrier) : 
-              calculateDownAndOutCallPrice(S, K, r, t, sigma, barrier);
-          }
-        } else { // Put
-          if (isKnockIn) {
-            price = isUpBarrier ? 
-              calculateUpAndInPutPrice(S, K, r, t, sigma, barrier) : 
-              calculateDownAndInPutPrice(S, K, r, t, sigma, barrier);
-          } else { // Knock-Out
-            price = isUpBarrier ? 
-              calculateUpAndOutPutPrice(S, K, r, t, sigma, barrier) : 
-              calculateDownAndOutPutPrice(S, K, r, t, sigma, barrier);
-          }
-        }
-        
-        // S'assurer que le prix n'est pas négatif
-        return Math.max(0, price);
-      } catch (error) {
-        console.warn("Erreur dans le calcul en forme fermée, utilisation de Monte Carlo à la place:", error);
-        // Ne pas revenir silencieusement à Monte Carlo - informer l'utilisateur
+        path.push(nextPrice);
       }
+      
+      paths.push(path);
     }
     
-    // Utiliser Monte Carlo uniquement si Closed-Form n'est pas activé
-    // ou pour les types d'options non supportés par les formules analytiques
-    const simulationResults = generatePricePathsForPeriod(
-      t * 12, // Convertir années en mois
-      new Date().toISOString().split('T')[0], // Date actuelle
-      numSimulations
-    );
-
+    // Use our new function to calculate the price
     return calculatePricesFromPaths(
       optionType,
       S,
       K,
       r,
-      simulationResults.paths[0].length - 1, // Dernier index = maturité
-      simulationResults.paths,
+      numSteps, // The final index in the path
+      paths,
       barrier,
       secondBarrier
     );
@@ -555,7 +539,7 @@ const Index = () => {
       }
     }
 
-    // If it's a barrier option, use Monte Carlo simulation
+    // If it's a barrier option, use Monte Carlo simulation or closed-form solution based on flag
     if (type.includes('knockout') || type.includes('knockin')) {
       // Find the option in the strategy to get barrier values
       const option = strategy.find(opt => opt.type === type);
@@ -572,6 +556,20 @@ const Index = () => {
           option.secondBarrier) : 
         undefined;
       
+      // Use closed-form solution if enabled and appropriate for the option type
+      if (useClosedFormBarrier && !type.includes('double') && !type.includes('reverse')) {
+        return calculateBarrierOptionClosedForm(
+          type,
+          S,
+          K,
+          r,
+          t,
+          effectiveSigma,
+          barrier,
+          secondBarrier
+        );
+      } else {
+        // Otherwise use Monte Carlo simulation
       return calculateBarrierOptionPrice(
         type,
         S,
@@ -581,8 +579,9 @@ const Index = () => {
         effectiveSigma,
         barrier,
         secondBarrier,
-        realPriceParams.numSimulations // Utiliser le nombre de simulations configuré
+          barrierOptionSimulations // Use the number of simulations specific to barrier options
       );
+      }
     }
     
     // For standard options, use Black-Scholes
@@ -1033,57 +1032,25 @@ const Index = () => {
     } else {
       // Use the standard month generation logic
       let currentDate = new Date(startDate);
-      const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
-      const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
+    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
 
-      if (remainingDaysInMonth > 0) {
-        months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
-      }
+    if (remainingDaysInMonth > 0) {
+      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    }
 
-      for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
-        currentDate.setMonth(currentDate.getMonth() + 1);
-        months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+    for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
+      currentDate.setMonth(currentDate.getMonth() + 1);
+      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
       }
-        
+      
       // Use equal volumes for each month
       const monthlyVolume = params.totalVolume / months.length;
       monthlyVolumes = Array(months.length).fill(monthlyVolume);
     }
 
-    // Si useClosedForm est activé, nous utilisons une seed fixe pour les simulations
-    // Cela garantit la reproductibilité des résultats
-    let paths, monthlyIndices;
-    
-    if (useClosedForm) {
-      // Nous utilisons la fonction avec une seed fixe pour garantir des résultats identiques à chaque fois
-      const fixedSeed = 12345;
-      
-      // Fonction pour générer des nombres pseudo-aléatoires avec une seed
-      const seededRandom = (() => {
-        let seed = fixedSeed;
-        return () => {
-          seed = (seed * 9301 + 49297) % 233280;
-          return seed / 233280;
-        };
-      })();
-      
-      // Override temporaire de Math.random
-      const originalRandom = Math.random;
-      Math.random = seededRandom;
-      
-      // Générer les chemins de prix avec la seed fixe
-      const result = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
-      paths = result.paths;
-      monthlyIndices = result.monthlyIndices;
-      
-      // Restaurer la fonction Math.random originale
-      Math.random = originalRandom;
-    } else {
-      // En mode Monte Carlo normal, nous utilisons des chemins aléatoires
-      const result = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
-      paths = result.paths;
-      monthlyIndices = result.monthlyIndices;
-    }
+    // Generate price paths for the entire period
+    const { paths, monthlyIndices } = generatePricePathsForPeriod(months, startDate, realPriceParams.numSimulations);
 
     // If simulation is enabled, generate new real prices using the first path
     if (realPriceParams.useSimulation) {
@@ -1438,7 +1405,7 @@ const Index = () => {
             price = strike*Math.exp(-params.interestRate/100*t)*(1-Nd2) - forward*(1-Nd1);
           }
         } else if (option.type.includes('knockout') || option.type.includes('knockin')) {
-          // For barrier options, use Monte Carlo paths
+          // For barrier options, use Monte Carlo paths or closed-form solutions based on flag
           const barrier = option.barrierType === 'percent' ? 
             params.spotPrice * (option.barrier / 100) : 
             option.barrier;
@@ -1449,7 +1416,20 @@ const Index = () => {
               option.secondBarrier) : 
             undefined;
             
-          // Calculate using our new price paths function
+          // Use closed-form solution if enabled and option type is supported
+          if (useClosedFormBarrier && !option.type.includes('double') && !option.type.includes('reverse')) {
+            price = calculateBarrierOptionClosedForm(
+              option.type,
+              forward,
+              strike,
+              params.interestRate/100,
+              t,
+              option.volatility/100,
+              barrier,
+              secondBarrier
+            );
+          } else {
+            // Otherwise use Monte Carlo simulation
           price = calculatePricesFromPaths(
                 option.type,
                 forward,
@@ -1460,6 +1440,7 @@ const Index = () => {
             barrier,
             secondBarrier
           );
+          }
         }
             
         return {
@@ -1627,11 +1608,12 @@ const Index = () => {
     const adjustedPrice = params.spotPrice * (1 + scenario.priceShock);
     
     // Mettre à jour les paramètres de prix réels
-    setRealPriceParams({
+    setRealPriceParams(prev => ({
+      ...prev,
       useSimulation: !scenario.realBasis, // Désactiver la simulation si on utilise realBasis
       volatility: scenario.volatility,
       drift: scenario.drift
-    });
+    }));
     
     // Calculer les forward prices et real prices selon le type de scénario
       const newForwards = {};
@@ -1785,6 +1767,8 @@ const Index = () => {
       manualForwards,
       realPrices,
       realPriceParams,
+      barrierOptionSimulations,
+      useClosedFormBarrier,
       activeTab,
       customScenario,
       stressTestScenarios,
@@ -1800,6 +1784,8 @@ const Index = () => {
     manualForwards,
     realPrices,
     realPriceParams,
+    barrierOptionSimulations,
+    useClosedFormBarrier,
     activeTab,
     customScenario,
     stressTestScenarios,
@@ -1835,7 +1821,7 @@ const Index = () => {
     setRealPriceParams({
       useSimulation: false,
       volatility: 0.3,
-      drift: 0.01,
+      drift: 0,
       numSimulations: 1000
     });
     
@@ -1943,9 +1929,11 @@ const Index = () => {
       realPriceParams: {
         useSimulation: false,
         volatility: 0.3,
-        drift: 0.01,
+        drift: 0,
         numSimulations: 1000
       },
+      barrierOptionSimulations: 1000,
+      useClosedFormBarrier: false,
       activeTab: activeTab,
       customScenario: {
         name: "Custom Case",
@@ -3244,6 +3232,30 @@ const Index = () => {
     const barrierOptionPricePaths: number[][] = [];
 
     if (barrierOptions.length > 0) {
+      // Génération de chemins spécifiques pour les options à barrière
+      const barrierPathsData = generatePricePathsForPeriod(months, startDate, barrierOptionSimulations);
+      const barrierPaths = barrierPathsData.paths;
+      const barrierMonthlyIndices = barrierPathsData.monthlyIndices;
+      
+      // Sélectionner les chemins à utiliser pour l'affichage (soit tous si peu nombreux, soit un échantillon aléatoire)
+      const maxDisplayPaths = Math.min(100, barrierPaths.length);
+      const selectedPathIndices = [];
+      
+      // Si nous avons moins de 100 chemins, utilisez-les tous
+      if (barrierPaths.length <= maxDisplayPaths) {
+        for (let i = 0; i < barrierPaths.length; i++) {
+          selectedPathIndices.push(i);
+        }
+      } else {
+        // Sinon, sélectionnez 100 indices aléatoires
+        while (selectedPathIndices.length < maxDisplayPaths) {
+          const randomIndex = Math.floor(Math.random() * barrierPaths.length);
+          if (!selectedPathIndices.includes(randomIndex)) {
+            selectedPathIndices.push(randomIndex);
+          }
+        }
+      }
+
       // Pour simplifier, utilisez la première option à barrière
       const barrierOption = barrierOptions[0];
       
@@ -3263,33 +3275,14 @@ const Index = () => {
         ? params.spotPrice * (barrierOption.strike / 100)
         : barrierOption.strike;
 
-      // Sélectionner les chemins à utiliser (soit tous si peu nombreux, soit un échantillon aléatoire)
-      const maxDisplayPaths = Math.min(100, paths.length);
-      const selectedPathIndices = [];
-      
-      // Si nous avons moins de 100 chemins, utilisez-les tous
-      if (paths.length <= maxDisplayPaths) {
-        for (let i = 0; i < paths.length; i++) {
-          selectedPathIndices.push(i);
-        }
-      } else {
-        // Sinon, sélectionnez 100 indices aléatoires
-        while (selectedPathIndices.length < maxDisplayPaths) {
-          const randomIndex = Math.floor(Math.random() * paths.length);
-          if (!selectedPathIndices.includes(randomIndex)) {
-            selectedPathIndices.push(randomIndex);
-          }
-        }
-      }
-
       // Calculer les prix des options pour les chemins sélectionnés
       for (const pathIndex of selectedPathIndices) {
-        const path = paths[pathIndex];
+        const path = barrierPaths[pathIndex];
         const optionPrices: number[] = [];
         
         // Pour chaque mois, calculer le prix de l'option
-        for (let monthIdx = 0; monthIdx < monthlyIndices.length; monthIdx++) {
-          const maturityIndex = monthlyIndices[monthIdx];
+        for (let monthIdx = 0; monthIdx < barrierMonthlyIndices.length; monthIdx++) {
+          const maturityIndex = barrierMonthlyIndices[monthIdx];
           
           // Calculer le prix de l'option à ce point
           const optionPrice = calculatePricesFromPaths(
@@ -3320,7 +3313,7 @@ const Index = () => {
     });
 
     setIsRunningSimulation(false);
-  }, [params, realPriceParams.numSimulations, strategy, results]);
+  }, [params, realPriceParams.numSimulations, strategy, results, barrierOptionSimulations]);
 
   // Update the realPriceParams and recalculate when numSimulations changes
   const handleNumSimulationsChange = (value: number) => {
@@ -3337,6 +3330,13 @@ const Index = () => {
       recalculateMonteCarloSimulations();
     }
   };
+
+  // Mise à jour du nombre de simulations pour les options à barrière
+  useEffect(() => {
+    if (results && strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin'))) {
+      recalculateMonteCarloSimulations();
+    }
+  }, [barrierOptionSimulations, recalculateMonteCarloSimulations, results, strategy]);
 
   // Ajouter un effet useEffect pour recalculer les simulations Monte Carlo lorsque useSimulation change
   useEffect(() => {
@@ -3419,245 +3419,125 @@ const Index = () => {
     }
   };
 
-  // Ajouter dans l'état de l'application
-  const [useClosedForm, setUseClosedForm] = useState(false);
-  
-  // Ajouter les fonctions de calcul en forme fermée pour les options à barrière
-  /**
-   * Calcule la fonction de répartition normale standard (cumulative distribution function)
-   */
-  const normalCDF = (x: number): number => {
-    return 0.5 * (1 + erf(x / Math.sqrt(2)));
-  };
-
-  /**
-   * Calcule la densité de la loi normale standard (probability density function)
-   */
-  const normalPDF = (x: number): number => {
-    return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
-  };
-
-  /**
-   * Calcule le prix d'une option Call Down-and-Out en utilisant la formule en forme fermée
-   */
-  const calculateDownAndOutCallPrice = (
-    S: number,      // Spot price
+  // Fonction pour calculer le prix des options à barrière avec formules fermées
+  const calculateBarrierOptionClosedForm = (
+    optionType: string,
+    S: number,      // Current price
     K: number,      // Strike price
     r: number,      // Risk-free rate
     t: number,      // Time to maturity in years
     sigma: number,  // Volatility
-    H: number       // Barrier (must be below spot price)
-  ): number => {
-    if (H >= S) {
-      throw new Error("Pour Down-and-Out Call, la barrière doit être inférieure au prix spot");
-    }
-
-    // Si la barrière est déjà touchée (S <= H), l'option est déjà knockout
-    if (S <= H) {
-      return 0;
-    }
-
-    // Paramètres pour la formule
-    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
-    const y = Math.log(H * H / (S * K)) / (sigma * Math.sqrt(t));
-    const x1 = Math.log(S / K) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-    const x2 = Math.log(S / H) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-    const y1 = Math.log(H / S) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-    const y2 = Math.log(H / K) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-
-    // La formule pour vanilla call
-    const vanilla = S * normalCDF(x1) - K * Math.exp(-r * t) * normalCDF(x1 - sigma * Math.sqrt(t));
+    barrier: number, // Barrier level
+    secondBarrier?: number // Second barrier for double barrier options
+  ) => {
+    // Paramètres fondamentaux selon les notations standards
+    const b = r;                          // Cost of carry (peut être ajusté pour dividendes)
+    const mu = (b - sigma * sigma / 2) / (sigma * sigma);  // Drift parameter
+    const lambda = Math.sqrt(mu * mu + 2 * r / (sigma * sigma)); // Lambda parameter
     
-    // Correction pour la barrière
-    const correction = S * Math.pow(H / S, 2 * lambda) * normalCDF(y1) - 
-                      K * Math.exp(-r * t) * Math.pow(H / S, 2 * lambda - 2) * normalCDF(y1 - sigma * Math.sqrt(t));
+    // Fonction pour calculer N(x) - fonction de répartition de la loi normale centrée réduite
+    const N = (x) => (1 + erf(x / Math.sqrt(2))) / 2;
     
-    return vanilla - correction;
-  };
-
-  /**
-   * Calcule le prix d'une option Call Up-and-Out en utilisant la formule en forme fermée
-   */
-  const calculateUpAndOutCallPrice = (
-    S: number,      // Spot price
-    K: number,      // Strike price
-    r: number,      // Risk-free rate
-    t: number,      // Time to maturity in years
-    sigma: number,  // Volatility
-    H: number       // Barrier (must be above spot price and strike)
-  ): number => {
-    if (H <= S) {
-      throw new Error("Pour Up-and-Out Call, la barrière doit être supérieure au prix spot");
-    }
+    // Calcul des termes récurrents dans les formules
+    const phi = (x, y) => {
+      if (y <= 0) {
+        return 0;
+      }
+      return Math.exp(-2 * Math.log(S / barrier) * Math.log(barrier / y) / (sigma * sigma * t)) * N(x - 2 * Math.log(S / barrier) / (sigma * Math.sqrt(t)));
+    };
     
-    if (H <= K) {
-      throw new Error("Pour Up-and-Out Call, la barrière doit être supérieure au strike");
-    }
-
-    // Si la barrière est déjà touchée (S >= H), l'option est déjà knockout
-    if (S >= H) {
-      return 0;
-    }
-
-    // Calcul du vanilla call
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
+    // Base de la formule de Black-Scholes
+    const d1 = (Math.log(S / K) + (b + sigma * sigma / 2) * t) / (sigma * Math.sqrt(t));
     const d2 = d1 - sigma * Math.sqrt(t);
-    const call = S * normalCDF(d1) - K * Math.exp(-r * t) * normalCDF(d2);
-
-    // Paramètres pour la correction de barrière
-    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
-    const mu = 2 * r / (sigma * sigma);
     
-    const x1 = Math.log(S / H) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-    const y1 = Math.log(H * H / (S * K)) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
+    // Termes spécifiques aux options à barrière
+    const e1 = (Math.log(S / barrier) + (b + sigma * sigma / 2) * t) / (sigma * Math.sqrt(t));
+    const e2 = e1 - sigma * Math.sqrt(t);
     
-    // Termes de la correction
-    const term1 = S * Math.pow(H / S, 2 * lambda) * normalCDF(x1);
-    const term2 = K * Math.exp(-r * t) * Math.pow(H / S, 2 * lambda - 2) * normalCDF(x1 - sigma * Math.sqrt(t));
+    const f1 = (Math.log(barrier / S) + (b + sigma * sigma / 2) * t) / (sigma * Math.sqrt(t));
+    const f2 = f1 - sigma * Math.sqrt(t);
     
-    // Prix final
-    return call - (term1 - term2);
-  };
-
-  /**
-   * Calcule le prix d'une option Put Down-and-Out en utilisant la formule en forme fermée
-   */
-  const calculateDownAndOutPutPrice = (
-    S: number,      // Spot price
-    K: number,      // Strike price
-    r: number,      // Risk-free rate
-    t: number,      // Time to maturity in years
-    sigma: number,  // Volatility
-    H: number       // Barrier (must be below spot price and strike)
-  ): number => {
-    if (H >= S) {
-      throw new Error("Pour Down-and-Out Put, la barrière doit être inférieure au prix spot");
+    // Paramètres pour l'effet de barrière
+    const eta = (optionType.includes('call')) ? 1 : -1;  // +1 pour call, -1 pour put
+    const phi_factor = Math.pow(barrier / S, 2 * mu);
+    
+    // Formules spécifiques selon Haug (2007) "The Complete Guide to Option Pricing Formulas"
+    
+    // Down-and-out call (S > B et B < K)
+    if (optionType === 'call-knockout' && !optionType.includes('reverse') && barrier < S && barrier < K) {
+      return S * N(d1) - K * Math.exp(-r * t) * N(d2) - 
+             S * phi_factor * (N(-e1) - N(-f1)) + 
+             K * Math.exp(-r * t) * phi_factor * (N(-e2) - N(-f2));
     }
     
-    if (H >= K) {
-      throw new Error("Pour Down-and-Out Put, la barrière doit être inférieure au strike");
+    // Up-and-out call (S < B et B > K)
+    else if (optionType === 'call-knockout' && !optionType.includes('reverse') && barrier > S && barrier > K) {
+      return S * N(d1) - K * Math.exp(-r * t) * N(d2) - 
+             S * phi_factor * N(e1) + 
+             K * Math.exp(-r * t) * phi_factor * N(e2);
     }
-
-    // Si la barrière est déjà touchée (S <= H), l'option est déjà knockout
-    if (S <= H) {
-      return 0;
+    
+    // Down-and-out put (S > B et B < K)
+    else if (optionType === 'put-knockout' && !optionType.includes('reverse') && barrier < S && barrier < K) {
+      return K * Math.exp(-r * t) * N(-d2) - S * N(-d1) - 
+             (K * Math.exp(-r * t) * phi_factor * N(-e2) - 
+              S * phi_factor * N(-e1));
     }
-
-    // Calcul du vanilla put
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
-    const d2 = d1 - sigma * Math.sqrt(t);
-    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
-
-    // Paramètres pour la correction de barrière
-    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
     
-    // Termes de correction
-    const x1 = Math.log(S / H) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-    const y1 = Math.log(H * H / (S * K)) / (sigma * Math.sqrt(t)) + lambda * sigma * Math.sqrt(t);
-
-    // Application de la formule pour Down-and-Out Put
-    const term1 = K * Math.exp(-r * t) * Math.pow(H / S, 2 * lambda - 2) * normalCDF(x1 - sigma * Math.sqrt(t));
-    const term2 = S * Math.pow(H / S, 2 * lambda) * normalCDF(x1);
-
-    return put - (term1 - term2);
-  };
-
-  /**
-   * Calcule le prix d'une option Put Up-and-Out en utilisant la formule en forme fermée
-   */
-  const calculateUpAndOutPutPrice = (
-    S: number,      // Spot price
-    K: number,      // Strike price
-    r: number,      // Risk-free rate
-    t: number,      // Time to maturity in years
-    sigma: number,  // Volatility
-    H: number       // Barrier (must be above spot price)
-  ): number => {
-    if (H <= S) {
-      throw new Error("Pour Up-and-Out Put, la barrière doit être supérieure au prix spot");
+    // Up-and-out put (S < B et B > K)
+    else if (optionType === 'put-knockout' && !optionType.includes('reverse') && barrier > S && barrier > K) {
+      return K * Math.exp(-r * t) * N(-d2) - S * N(-d1) - 
+             (K * Math.exp(-r * t) * phi_factor * (N(f2) - N(e2)) - 
+              S * phi_factor * (N(f1) - N(e1)));
     }
-
-    // Si la barrière est déjà touchée (S >= H), l'option est déjà knockout
-    if (S >= H) {
-      return 0;
+    
+    // Reverse knock-out call: s'active quand le sous-jacent descend en-dessous de la barrière
+    else if (optionType === 'call-reverse-knockout') {
+      // Pour ce type d'option, la barrière est généralement inférieure au prix du sous-jacent
+      if (barrier < S) {
+        // Appliquer la formule de l'up-and-out put mais ajustée pour un call
+        return S * N(d1) - K * Math.exp(-r * t) * N(d2) -
+               S * phi_factor * N(-e1) + 
+               K * Math.exp(-r * t) * phi_factor * N(-e2);
+      }
     }
-
-    // Calcul du vanilla put
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
-    const d2 = d1 - sigma * Math.sqrt(t);
-    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
-
-    // Paramètres pour la formule
-    const lambda = (r + 0.5 * sigma * sigma) / (sigma * sigma);
     
-    // Put Up-and-Out est plus simple car il ne nécessite pas d'ajustements complexes 
-    // si la barrière est au-dessus du strike
-    return put;
+    // Reverse knock-out put: s'active quand le sous-jacent monte au-dessus de la barrière
+    else if (optionType === 'put-reverse-knockout') {
+      // Pour ce type d'option, la barrière est généralement supérieure au prix du sous-jacent
+      if (barrier > S) {
+        // Appliquer la formule de l'down-and-out call mais ajustée pour un put
+        return K * Math.exp(-r * t) * N(-d2) - S * N(-d1) -
+               (K * Math.exp(-r * t) * phi_factor * (-N(f2) + N(e2)) - 
+                S * phi_factor * (-N(f1) + N(e1)));
+      }
+    }
+    
+    // Pour les options knock-in, utiliser la parité knock-in + knock-out = vanille
+    else if (optionType.includes('knockin')) {
+      // Calcul du prix de l'option vanille correspondante (Black-Scholes standard)
+      let vanillaPrice;
+      if (optionType.includes('call')) {
+        vanillaPrice = S * N(d1) - K * Math.exp(-r * t) * N(d2);
+      } else { // put
+        vanillaPrice = K * Math.exp(-r * t) * N(-d2) - S * N(-d1);
+      }
+      
+      // Type correspondant pour l'option knock-out
+      const koType = optionType.replace('knockin', 'knockout');
+      
+      // Appliquer la relation de parité
+      const knockoutPrice = calculateBarrierOptionClosedForm(koType, S, K, r, t, sigma, barrier);
+      return vanillaPrice - knockoutPrice;
+    }
+    
+    // Pour les cas non couverts par les formules (options à double barrière, barrières inversées, etc.)
+    // Utiliser la simulation Monte Carlo
+    return calculateBarrierOptionPrice(optionType, S, K, r, t, sigma, barrier, secondBarrier, barrierOptionSimulations);
   };
 
-  /**
-   * Calcule le prix d'une option Call Down-and-In en utilisant la relation In + Out = Vanilla
-   */
-  const calculateDownAndInCallPrice = (
-    S: number, K: number, r: number, t: number, sigma: number, H: number
-  ): number => {
-    // Calcul du prix vanilla
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
-    const d2 = d1 - sigma * Math.sqrt(t);
-    const call = S * normalCDF(d1) - K * Math.exp(-r * t) * normalCDF(d2);
-    
-    // Down-and-In = Vanilla - Down-and-Out
-    const downAndOut = calculateDownAndOutCallPrice(S, K, r, t, sigma, H);
-    return call - downAndOut;
-  };
-
-  /**
-   * Calcule le prix d'une option Call Up-and-In en utilisant la relation In + Out = Vanilla
-   */
-  const calculateUpAndInCallPrice = (
-    S: number, K: number, r: number, t: number, sigma: number, H: number
-  ): number => {
-    // Calcul du prix vanilla
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
-    const d2 = d1 - sigma * Math.sqrt(t);
-    const call = S * normalCDF(d1) - K * Math.exp(-r * t) * normalCDF(d2);
-    
-    // Up-and-In = Vanilla - Up-and-Out
-    const upAndOut = calculateUpAndOutCallPrice(S, K, r, t, sigma, H);
-    return call - upAndOut;
-  };
-
-  /**
-   * Calcule le prix d'une option Put Down-and-In en utilisant la relation In + Out = Vanilla
-   */
-  const calculateDownAndInPutPrice = (
-    S: number, K: number, r: number, t: number, sigma: number, H: number
-  ): number => {
-    // Calcul du prix vanilla
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
-    const d2 = d1 - sigma * Math.sqrt(t);
-    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
-    
-    // Down-and-In = Vanilla - Down-and-Out
-    const downAndOut = calculateDownAndOutPutPrice(S, K, r, t, sigma, H);
-    return put - downAndOut;
-  };
-
-  /**
-   * Calcule le prix d'une option Put Up-and-In en utilisant la relation In + Out = Vanilla
-   */
-  const calculateUpAndInPutPrice = (
-    S: number, K: number, r: number, t: number, sigma: number, H: number
-  ): number => {
-    // Calcul du prix vanilla
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * Math.sqrt(t));
-    const d2 = d1 - sigma * Math.sqrt(t);
-    const put = K * Math.exp(-r * t) * normalCDF(-d2) - S * normalCDF(-d1);
-    
-    // Up-and-In = Vanilla - Up-and-Out
-    const upAndOut = calculateUpAndOutPutPrice(S, K, r, t, sigma, H);
-    return put - upAndOut;
-  };
+  const [barrierValue, setBarrierValue] = useState<number | null>(null);
+  const [secondBarrierValue, setSecondBarrierValue] = useState<number | null>(null);
 
   return (
     <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
@@ -3864,18 +3744,18 @@ const Index = () => {
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <Switch
-                      checked={realPriceParams.useSimulation}
+                    checked={realPriceParams.useSimulation}
                       onCheckedChange={(checked) => setRealPriceParams(prev => ({...prev, useSimulation: checked}))}
                       id="useMonteCarloSimulation"
-                    />
+                  />
                     <label htmlFor="useMonteCarloSimulation" className="text-sm font-medium cursor-pointer">
-                      Use Monte Carlo Simulation
+                      Use Monte Carlo Simulation for Real Prices
                     </label>
-                  </div>
+                </div>
                   
                   {realPriceParams.useSimulation && (
                     <div className="compact-form-group pl-8">
-                      <label className="compact-label">Number of Simulations</label>
+                      <label className="compact-label">Number of Price Path Simulations</label>
                       <div className="flex items-center gap-2">
                         <Slider 
                           value={[realPriceParams.numSimulations]} 
@@ -3885,45 +3765,22 @@ const Index = () => {
                           onValueChange={(value) => setRealPriceParams(prev => ({...prev, numSimulations: value[0]}))}
                           className="flex-1"
                         />
-                        <Input
-                          type="number"
-                          value={realPriceParams.numSimulations}
-                          onChange={(e) => setRealPriceParams(prev => ({...prev, numSimulations: Number(e.target.value)}))}
-                          min="100"
-                          max="10000"
-                          step="100"
+                  <Input
+                    type="number"
+                    value={realPriceParams.numSimulations}
+                    onChange={(e) => setRealPriceParams(prev => ({...prev, numSimulations: Number(e.target.value)}))}
+                    min="100"
+                    max="10000"
+                    step="100"
                           className="compact-input w-20 text-center"
-                        />
-                      </div>
+                  />
+                </div>
                     </div>
                   )}
                   
                   <div className="flex items-center gap-2">
                     <Switch
-                      checked={useClosedForm}
-                      onCheckedChange={(checked) => {
-                        setUseClosedForm(checked);
-                        // Désactiver Monte Carlo si Closed-Form est activé
-                        if (checked) {
-                          setRealPriceParams(prev => ({...prev, useSimulation: false}));
-                        }
-                      }}
-                      id="useClosedForm"
-                      disabled={strategy.some(opt => opt.type.includes('double') || opt.type.includes('reverse'))}
-                    />
-                    <label htmlFor="useClosedForm" className="text-sm font-medium cursor-pointer">
-                      Use Closed-Form Solutions for Barrier Options
-                    </label>
-                    {strategy.some(opt => opt.type.includes('double') || opt.type.includes('reverse')) && (
-                      <span className="text-xs text-amber-600 ml-2">
-                        (Not available for double or reverse barriers)
-                      </span>
-                    )}
-                  </div>
-                  
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      checked={useImpliedVol}
+                    checked={useImpliedVol}
                       onCheckedChange={(checked) => setUseImpliedVol(checked)}
                       id="useImpliedVol"
                     />
@@ -3932,6 +3789,72 @@ const Index = () => {
                     </label>
                   </div>
                 </div>
+              </div>
+              
+              <div className="mt-6 pt-4 border-t">
+                <h3 className="text-base font-medium mb-3 text-primary">Barrier Option Simulation</h3>
+                <div className="space-y-3">
+                  <div className="compact-form-group">
+                    <label className="compact-label">Number of Simulations for Barrier Options</label>
+                    <div className="flex items-center gap-2">
+                      <Slider 
+                        value={[barrierOptionSimulations]} 
+                        min={100} 
+                        max={10000} 
+                        step={100}
+                        onValueChange={(value) => setBarrierOptionSimulations(value[0])}
+                        className="flex-1"
+                      />
+                      <Input
+                        type="number"
+                        value={barrierOptionSimulations}
+                        onChange={(e) => setBarrierOptionSimulations(Number(e.target.value))}
+                        min="100"
+                        max="10000"
+                        step="100"
+                        className="compact-input w-20 text-center"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Utilisé uniquement pour le pricing des options à barrière
+                    </p>
+                  </div>
+                  
+                  <div className="compact-form-group">
+                    <label className="compact-label">Pricing Method for Barrier Options</label>
+                    <div className="flex items-center space-x-4 mt-1">
+                      <div className="flex items-center">
+                        <input
+                          id="monte-carlo"
+                          name="calculation-method"
+                          type="radio"
+                          className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300"
+                          checked={!useClosedFormBarrier}
+                          onChange={() => setUseClosedFormBarrier(false)}
+                        />
+                        <label htmlFor="monte-carlo" className="ml-2 block text-sm text-gray-700">
+                          Monte Carlo Simulation
+                        </label>
+                      </div>
+                      <div className="flex items-center">
+                        <input
+                          id="closed-form"
+                          name="calculation-method"
+                          type="radio"
+                          className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300"
+                          checked={useClosedFormBarrier}
+                          onChange={() => setUseClosedFormBarrier(true)}
+                        />
+                        <label htmlFor="closed-form" className="ml-2 block text-sm text-gray-700">
+                          Closed-Form Solution
+                        </label>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Closed-form solutions provide faster and more accurate pricing for standard barrier options
+                    </p>
+                  </div>
+                    </div>
               </div>
             </CardContent>
           </Card>
