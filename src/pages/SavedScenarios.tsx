@@ -252,28 +252,65 @@ const SavedScenarios = () => {
                         <thead>
                           <tr>
                             <th className="border p-2">Maturity</th>
+                            <th className="border p-2">Time to Maturity</th>
                             <th className="border p-2">Forward Price</th>
                             <th className="border p-2">Real Price</th>
+                            <th className="border p-2">IV (%)</th>
+                            {scenario.results[0]?.optionPrices?.map((option, idx) => (
+                              <th key={idx} className="border p-2">{option.label || `${option.type.charAt(0).toUpperCase() + option.type.slice(1)} Price ${idx + 1}`}</th>
+                            ))}
                             <th className="border p-2">Strategy Price</th>
                             <th className="border p-2">Payoff</th>
+                            <th className="border p-2">Volume</th>
                             <th className="border p-2">Hedged Cost</th>
                             <th className="border p-2">Unhedged Cost</th>
                             <th className="border p-2">Delta P&L</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {scenario.results.map((row, i) => (
-                            <tr key={i}>
-                              <td className="border p-2">{row.date}</td>
-                              <td className="border p-2">{row.forward.toFixed(2)}</td>
-                              <td className="border p-2">{row.realPrice.toFixed(2)}</td>
-                              <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
-                              <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
-                              <td className="border p-2">{row.hedgedCost.toFixed(2)}</td>
-                              <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
-                              <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
-                            </tr>
-                          ))}
+                          {scenario.results.map((row, i) => {
+                            // Récupération de la volatilité implicite pour cette date
+                            const date = row.date;
+                            let impliedVol = null;
+                            
+                            // 1. Vérifier si l'utilisateur a entré des valeurs manuelles d'IV
+                            if (scenario.useImpliedVol && scenario.impliedVolatilities && scenario.impliedVolatilities[date]) {
+                              impliedVol = scenario.impliedVolatilities[date];
+                            }
+                            // 2. Utiliser la volatilité de la stratégie comme dernier recours
+                            else if (scenario.strategy && scenario.strategy.length > 0) {
+                              impliedVol = scenario.strategy[0].volatility / 100;
+                            }
+                            
+                            return (
+                              <tr key={i}>
+                                <td className="border p-2">{row.date}</td>
+                                <td className="border p-2">{row.timeToMaturity.toFixed(4)}</td>
+                                <td className="border p-2">{row.forward.toFixed(2)}</td>
+                                <td className="border p-2">{row.realPrice.toFixed(2)}</td>
+                                <td className="border p-2">
+                                  {impliedVol !== null 
+                                    ? (impliedVol * 100).toFixed(0) 
+                                    : ""}
+                                </td>
+                                {/* S'assurer que toutes les options sont affichées */}
+                                {row.optionPrices && Array.isArray(row.optionPrices) 
+                                  ? row.optionPrices.map((option, idx) => (
+                                      <td key={idx} className="border p-2">{option.price.toFixed(2)}</td>
+                                    ))
+                                  : scenario.strategy.map((_, idx) => (
+                                      <td key={idx} className="border p-2">-</td>
+                                    ))
+                                }
+                                <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
+                                <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
+                                <td className="border p-2">{row.monthlyVolume.toFixed(0)}</td>
+                                <td className="border p-2">{row.hedgedCost.toFixed(2)}</td>
+                                <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
+                                <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -316,7 +353,7 @@ const SavedScenarios = () => {
                                 <td className="border p-2">{data.deltaPnL.toFixed(2)}</td>
                                 <td className="border p-2">{data.strategyPremium.toFixed(2)}</td>
                                 <td className="border p-2">
-                                  {data.volume > 0 ? (data.hedgedCost / data.volume).toFixed(2) : 'N/A'}
+                                  {data.volume > 0 ? (Math.abs(data.hedgedCost) / data.volume).toFixed(2) : 'N/A'}
                                 </td>
                                 <td className="border p-2">
                                   {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2)}%
@@ -385,7 +422,7 @@ const SavedScenarios = () => {
                                 const totalHedgedCost = scenario.results.reduce((sum, row) => sum + row.hedgedCost, 0);
                                 const totalVolume = scenario.results.reduce((sum, row) => sum + row.monthlyVolume, 0);
                                 return totalVolume > 0 
-                                  ? Number(totalHedgedCost / totalVolume).toFixed(2)
+                                  ? Number(Math.abs(totalHedgedCost) / totalVolume).toFixed(2)
                                   : 'N/A';
                               })()}
                             </td>
@@ -530,17 +567,25 @@ const SavedScenarios = () => {
                       strategy: scenario.strategy,
                       results: scenario.results,
                       payoffData: scenario.payoffData,
-                      manualForwards: {},
-                      realPrices: {},
+                      // Récupérer les paramètres personnalisés du scénario sauvegardé ou utiliser des valeurs par défaut
+                      manualForwards: scenario.manualForwards || {},
+                      realPrices: scenario.realPrices || {},
                       realPriceParams: {
                         useSimulation: false,
                         volatility: 0.3,
                         drift: 0.01,
                         numSimulations: 1000
                       },
-                      activeTab: 'stress',
+                      barrierOptionSimulations: 1000,
+                      useClosedFormBarrier: false,
+                      activeTab: 'parameters',
                       customScenario: scenario.stressTest,
-                      stressTestScenarios: {} // You might want to save this too
+                      stressTestScenarios: {}, // You might want to save this too
+                      // Récupérer les paramètres de volatilité implicite
+                      useImpliedVol: scenario.useImpliedVol || false,
+                      impliedVolatilities: scenario.impliedVolatilities || {},
+                      // Récupérer les prix personnalisés des options
+                      customOptionPrices: scenario.customOptionPrices || {}
                     }));
                     navigate('/');
                   }}

@@ -75,11 +75,19 @@ interface SavedScenario {
     interestRate: number;
     totalVolume: number;
     spotPrice: number;
+    useCustomPeriods?: boolean;
+    customPeriods?: CustomPeriod[];
   };
   strategy: StrategyComponent[];
   results: Result[];
   payoffData: Array<{ price: number; payoff: number }>;
   stressTest?: StressTestScenario;
+  // Ajouter les données additionnelles du tableau
+  useImpliedVol: boolean;
+  impliedVolatilities: {[key: string]: number};
+  manualForwards: {[key: string]: number};
+  realPrices: {[key: string]: number};
+  customOptionPrices?: {[key: string]: {[optionKey: string]: number}};
 }
 
 interface ImpliedVolatility {
@@ -418,61 +426,61 @@ const Index = () => {
   const recalculateResults = () => {
     if (!results) return;
     
-    const updatedResults = results.map(row => {
-      // Créer une clé unique pour le mois
-      const date = new Date(row.date);
+    // Create copy of results
+    const updatedResults = [...results];
+    
+    // Update each result with new data
+    updatedResults.forEach(result => {
+      const date = new Date(result.date);
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       
-      // Utiliser le volume personnalisé s'il existe, sinon le volume par défaut
-      const volume = customVolumes[monthKey] || row.monthlyVolume;
-      
-      // Mettre à jour les prix des options si des prix personnalisés sont utilisés
-      let updatedOptionPrices = [...row.optionPrices];
-      
-      if (useCustomOptionPrices && customOptionPrices[monthKey]) {
-        updatedOptionPrices = row.optionPrices.map((opt, j) => {
-          const optionKey = `${opt.type}-${j}`;
-          const customPrice = customOptionPrices[monthKey]?.[optionKey];
-          
-          if (customPrice !== undefined) {
-            return {
-              ...opt,
-              price: customPrice
-            };
-          }
-          return opt;
-        });
+      // Update forward price if available in manual forwards
+      if (manualForwards[monthKey]) {
+        result.forward = manualForwards[monthKey];
       }
       
-      // Recalculer le prix de la stratégie
-      const strategyPrice = updatedOptionPrices.reduce((total, opt) => 
-        total + (opt.price * opt.quantity), 0);
+      // Update real price if available in real prices
+      if (realPrices[monthKey]) {
+        result.realPrice = realPrices[monthKey];
+      }
       
-      // Recalculer les coûts et le P&L avec le nouveau volume
-      const unhedgedCost = -(volume * row.realPrice);
+      // Recalculate option prices with current parameters and IV
+      result.optionPrices.forEach(option => {
+        const strike = option.strike;
+        
+        // Use custom option prices if enabled
+        if (useCustomOptionPrices && customOptionPrices[monthKey]?.[`${option.type}-${option.label}`]) {
+          option.price = customOptionPrices[monthKey][`${option.type}-${option.label}`];
+        } else {
+          // Otherwise recalculate price with current parameters
+          // Note: Pass date to calculateOptionPrice to use implied volatility if available
+          option.price = calculateOptionPrice(
+            option.type, 
+            result.forward, 
+            strike, 
+            params.interestRate/100, 
+            result.timeToMaturity,
+            option.type.includes('swap') ? 0 : 
+            option.type.includes('barrier') || option.type.includes('knockout') || option.type.includes('knockin') ? 
+              (strategy.find(opt => opt.type === option.type)?.volatility || 20) / 100 :
+              (strategy.find(opt => opt.type === option.type)?.volatility || 20) / 100,
+            date // Pass date to use implied volatility if enabled
+          );
+        }
+      });
       
-      // Calculer les volumes couverts/non couverts en fonction des options
-      const totalSwapPercentage = strategy
-        .filter(s => s.type === 'swap')
-        .reduce((sum, swap) => sum + swap.quantity, 0) / 100;
+      // Recalculate strategy price
+      result.strategyPrice = result.optionPrices.reduce((sum, opt) => sum + opt.price * opt.quantity/100, 0);
       
-      const hedgedCost = -(volume * row.realPrice) + 
-        (volume * (1 - totalSwapPercentage) * row.totalPayoff) - 
-        (volume * (1 - totalSwapPercentage) * strategyPrice);
-      
-      const deltaPnL = hedgedCost - unhedgedCost;
-      
-      return {
-        ...row,
-        optionPrices: updatedOptionPrices,
-        strategyPrice,
-        monthlyVolume: volume,
-        unhedgedCost,
-        hedgedCost,
-        deltaPnL
-      };
+      // Recalculate hedged cost, unhedged cost, delta P&L
+      const monthlyPayoff = result.realPrice - result.forward;
+      result.totalPayoff = monthlyPayoff * result.monthlyVolume;
+      result.hedgedCost = result.strategyPrice * result.monthlyVolume;
+      result.unhedgedCost = result.totalPayoff;
+      result.deltaPnL = result.unhedgedCost - result.hedgedCost;
     });
     
+    // Update results state
     setResults(updatedResults);
   };
 
@@ -516,7 +524,7 @@ const Index = () => {
     }
     
     // Use our new function to calculate the price
-    return calculatePricesFromPaths(
+    const optionPrice = calculatePricesFromPaths(
       optionType,
       S,
       K,
@@ -526,6 +534,9 @@ const Index = () => {
       barrier,
       secondBarrier
     );
+
+    // S'assurer que le prix de l'option n'est jamais négatif
+    return Math.max(0, optionPrice);
   };
 
   // Modify the calculateOptionPrice function to handle barrier options
@@ -558,29 +569,29 @@ const Index = () => {
       
       // Use closed-form solution if enabled and appropriate for the option type
       if (useClosedFormBarrier && !type.includes('double') && !type.includes('reverse')) {
-        return calculateBarrierOptionClosedForm(
+        return Math.max(0, calculateBarrierOptionClosedForm(
           type,
           S,
           K,
           r,
           t,
-          effectiveSigma,
+          effectiveSigma, // Use implied vol if available
           barrier,
           secondBarrier
-        );
+        ));
       } else {
         // Otherwise use Monte Carlo simulation
-      return calculateBarrierOptionPrice(
-        type,
-        S,
-        K,
-        r,
-        t,
-        effectiveSigma,
-        barrier,
-        secondBarrier,
+        return Math.max(0, calculateBarrierOptionPrice(
+          type,
+          S,
+          K,
+          r,
+          t,
+          effectiveSigma, // Use implied vol if available
+          barrier,
+          secondBarrier,
           barrierOptionSimulations // Use the number of simulations specific to barrier options
-      );
+        ));
       }
     }
     
@@ -591,11 +602,15 @@ const Index = () => {
     const Nd1 = (1 + erf(d1/Math.sqrt(2)))/2;
     const Nd2 = (1 + erf(d2/Math.sqrt(2)))/2;
     
+    let price = 0;
     if (type === 'call') {
-      return S*Nd1 - K*Math.exp(-r*t)*Nd2;
+      price = S*Nd1 - K*Math.exp(-r*t)*Nd2;
     } else { // put
-      return K*Math.exp(-r*t)*(1-Nd2) - S*(1-Nd1);
+      price = K*Math.exp(-r*t)*(1-Nd2) - S*(1-Nd1);
     }
+    
+    // S'assurer que le prix de l'option n'est jamais négatif
+    return Math.max(0, price);
   };
 
   // Error function (erf) implementation
@@ -1747,7 +1762,12 @@ const Index = () => {
       strategy,
       results,
       payoffData,
-      stressTest: activeStressTest ? stressTestScenarios[activeStressTest] : null
+      stressTest: activeStressTest ? stressTestScenarios[activeStressTest] : null,
+      useImpliedVol,
+      impliedVolatilities,
+      manualForwards,
+      realPrices,
+      customOptionPrices
     };
 
     const savedScenarios = JSON.parse(localStorage.getItem('optionScenarios') || '[]');
@@ -2090,6 +2110,14 @@ const Index = () => {
       ...prev,
       [monthKey]: value
     }));
+    
+    // Activer automatiquement l'utilisation des volatilités implicites
+    if (!useImpliedVol) {
+      setUseImpliedVol(true);
+    }
+    
+    // Recalculer les résultats immédiatement avec les nouvelles volatilités implicites
+    recalculateResults();
   };
 
   // Fonction pour calculer le prix du swap (moyenne des forwards actualisés)
@@ -2872,7 +2900,12 @@ const Index = () => {
         priceShock: 0,
         isHistorical: true,  // Marquer comme backtest historique
         historicalData: [...historicalData]  // Ajouter les données historiques
-      }
+      },
+      useImpliedVol,
+      impliedVolatilities,
+      manualForwards,
+      realPrices,
+      customOptionPrices
     };
 
     // Récupérer les scénarios existants
@@ -3467,32 +3500,34 @@ const Index = () => {
     const eta = (optionType.includes('call')) ? 1 : -1;  // +1 pour call, -1 pour put
     const phi_factor = Math.pow(barrier / S, 2 * mu);
     
+    let optionPrice = 0;
+    
     // Formules spécifiques selon Haug (2007) "The Complete Guide to Option Pricing Formulas"
     
     // Down-and-out call (S > B et B < K)
     if (optionType === 'call-knockout' && !optionType.includes('reverse') && barrier < S && barrier < K) {
-      return S * N(d1) - K * Math.exp(-r * t) * N(d2) - 
+      optionPrice = S * N(d1) - K * Math.exp(-r * t) * N(d2) - 
              S * phi_factor * (N(-e1) - N(-f1)) + 
              K * Math.exp(-r * t) * phi_factor * (N(-e2) - N(-f2));
     }
     
     // Up-and-out call (S < B et B > K)
     else if (optionType === 'call-knockout' && !optionType.includes('reverse') && barrier > S && barrier > K) {
-      return S * N(d1) - K * Math.exp(-r * t) * N(d2) - 
+      optionPrice = S * N(d1) - K * Math.exp(-r * t) * N(d2) - 
              S * phi_factor * N(e1) + 
              K * Math.exp(-r * t) * phi_factor * N(e2);
     }
     
     // Down-and-out put (S > B et B < K)
     else if (optionType === 'put-knockout' && !optionType.includes('reverse') && barrier < S && barrier < K) {
-      return K * Math.exp(-r * t) * N(-d2) - S * N(-d1) - 
+      optionPrice = K * Math.exp(-r * t) * N(-d2) - S * N(-d1) - 
              (K * Math.exp(-r * t) * phi_factor * N(-e2) - 
               S * phi_factor * N(-e1));
     }
     
     // Up-and-out put (S < B et B > K)
     else if (optionType === 'put-knockout' && !optionType.includes('reverse') && barrier > S && barrier > K) {
-      return K * Math.exp(-r * t) * N(-d2) - S * N(-d1) - 
+      optionPrice = K * Math.exp(-r * t) * N(-d2) - S * N(-d1) - 
              (K * Math.exp(-r * t) * phi_factor * (N(f2) - N(e2)) - 
               S * phi_factor * (N(f1) - N(e1)));
     }
@@ -3501,8 +3536,7 @@ const Index = () => {
     else if (optionType === 'call-reverse-knockout') {
       // Pour ce type d'option, la barrière est généralement inférieure au prix du sous-jacent
       if (barrier < S) {
-        // Appliquer la formule de l'up-and-out put mais ajustée pour un call
-        return S * N(d1) - K * Math.exp(-r * t) * N(d2) -
+        optionPrice = S * N(d1) - K * Math.exp(-r * t) * N(d2) -
                S * phi_factor * N(-e1) + 
                K * Math.exp(-r * t) * phi_factor * N(-e2);
       }
@@ -3512,8 +3546,7 @@ const Index = () => {
     else if (optionType === 'put-reverse-knockout') {
       // Pour ce type d'option, la barrière est généralement supérieure au prix du sous-jacent
       if (barrier > S) {
-        // Appliquer la formule de l'down-and-out call mais ajustée pour un put
-        return K * Math.exp(-r * t) * N(-d2) - S * N(-d1) -
+        optionPrice = K * Math.exp(-r * t) * N(-d2) - S * N(-d1) -
                (K * Math.exp(-r * t) * phi_factor * (-N(f2) + N(e2)) - 
                 S * phi_factor * (-N(f1) + N(e1)));
       }
@@ -3534,12 +3567,17 @@ const Index = () => {
       
       // Appliquer la relation de parité
       const knockoutPrice = calculateBarrierOptionClosedForm(koType, S, K, r, t, sigma, barrier);
-      return vanillaPrice - knockoutPrice;
+      optionPrice = vanillaPrice - knockoutPrice;
     }
     
     // Pour les cas non couverts par les formules (options à double barrière, barrières inversées, etc.)
     // Utiliser la simulation Monte Carlo
-    return calculateBarrierOptionPrice(optionType, S, K, r, t, sigma, barrier, secondBarrier, barrierOptionSimulations);
+    else {
+      optionPrice = calculateBarrierOptionPrice(optionType, S, K, r, t, sigma, barrier, secondBarrier, barrierOptionSimulations);
+    }
+    
+    // S'assurer que le prix de l'option n'est jamais négatif
+    return Math.max(0, optionPrice);
   };
 
   const [barrierValue, setBarrierValue] = useState<number | null>(null);
@@ -3564,7 +3602,9 @@ const Index = () => {
 
     // Méthode de Newton-Raphson pour trouver la volatilité implicite
     let sigma = 0.20; // Valeur initiale
-    let vega, price, diff;
+    let vega = 0;
+    let price = 0;
+    let diff = 0;
     let iteration = 0;
 
     while (iteration < maxIterations) {
@@ -3624,7 +3664,7 @@ const Index = () => {
       return updated;
     });
     
-    // Si nous avons des résultats et que l'option est un call ou put standard
+    // Si nous avons des résultats
     if (results) {
       const monthResult = results.find(r => {
         const date = new Date(r.date);
@@ -3640,23 +3680,67 @@ const Index = () => {
           opt.type === optionType && idx === optionIdx
         );
         
-        // Vérifier si c'est un call ou put standard
-        if (option && (option.type === 'call' || option.type === 'put')) {
-          // Calculer la volatilité implicite à partir du prix personnalisé
-          const impliedVol = calculateImpliedVolatility(
-            option.type,
-            monthResult.forward,  // Utiliser le prix forward comme S
-            option.strike,        // Prix d'exercice
-            params.interestRate / 100, // Taux sans risque (conversion en décimal)
-            monthResult.timeToMaturity, // Temps jusqu'à maturité
-            newPrice              // Prix observé de l'option
-          );
-          
-          // Mettre à jour la volatilité implicite pour ce mois
-          setImpliedVolatilities(prev => ({
-            ...prev,
-            [monthKey]: impliedVol
-          }));
+        if (option) {
+          // Pour les options standards (call/put)
+          if (option.type === 'call' || option.type === 'put') {
+            // Calculer la volatilité implicite à partir du prix personnalisé
+            const impliedVol = calculateImpliedVolatility(
+              option.type,
+              monthResult.forward,  // Utiliser le prix forward comme S
+              option.strike,        // Prix d'exercice
+              params.interestRate / 100, // Taux sans risque (conversion en décimal)
+              monthResult.timeToMaturity, // Temps jusqu'à maturité
+              newPrice              // Prix observé de l'option
+            );
+            
+            // Mettre à jour la volatilité implicite pour ce mois
+            setImpliedVolatilities(prev => ({
+              ...prev,
+              [monthKey]: impliedVol
+            }));
+          }
+          // Pour les options à barrière (avec knockout ou knockin dans leur type)
+          else if (option.type.includes('knockout') || option.type.includes('knockin')) {
+            // Trouver l'option correspondante dans la stratégie pour obtenir les valeurs de barrière
+            const strategyOption = strategy.find(opt => opt.type === option.type);
+            
+            if (strategyOption) {
+              // Approximation de la volatilité implicite par calibration inverse
+              // Essayer différentes valeurs de volatilité et trouver celle qui donne le prix le plus proche
+              let bestSigma = 0.20; // Valeur initiale
+              let bestDiff = Infinity;
+              const steps = 50;
+              
+              for (let i = 0; i <= steps; i++) {
+                const testSigma = 0.01 + (i / steps) * 0.99; // Test de volatilité entre 1% et 100%
+                
+                // Calculer le prix de l'option avec cette volatilité
+                const testPrice = calculateOptionPrice(
+                  option.type,
+                  monthResult.forward,
+                  option.strike,
+                  params.interestRate / 100,
+                  monthResult.timeToMaturity,
+                  testSigma
+                );
+                
+                // Calculer la différence avec le prix observé
+                const diff = Math.abs(testPrice - newPrice);
+                
+                // Si cette volatilité donne un prix plus proche, la conserver
+                if (diff < bestDiff) {
+                  bestDiff = diff;
+                  bestSigma = testSigma;
+                }
+              }
+              
+              // Mettre à jour la volatilité implicite pour ce mois
+              setImpliedVolatilities(prev => ({
+                ...prev,
+                [monthKey]: bestSigma * 100 // Convertir en pourcentage
+              }));
+            }
+          }
           
           // Activer automatiquement l'utilisation des volatilités implicites
           if (!useImpliedVol) {
@@ -3682,12 +3766,12 @@ const Index = () => {
       const date = new Date(monthResult.date);
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       
-      // Trouver la première option standard (call ou put) pour ce mois
-      // et calculer sa volatilité implicite
+      // Essayer d'abord de trouver une option standard (call ou put) pour ce mois
       const standardOption = monthResult.optionPrices.find(opt => 
         opt.type === 'call' || opt.type === 'put'
       );
       
+      // Si une option standard est trouvée, utiliser la méthode standard de calcul de IV
       if (standardOption) {
         // Calculer la volatilité implicite à partir du prix actuel
         const impliedVol = calculateImpliedVolatility(
@@ -3703,6 +3787,53 @@ const Index = () => {
         if (impliedVol > 0) {
           newImpliedVols[monthKey] = impliedVol;
         }
+      } 
+      // Sinon, essayer de trouver une option avec barrière
+      else {
+        const barrierOption = monthResult.optionPrices.find(opt => 
+          opt.type.includes('knockout') || opt.type.includes('knockin')
+        );
+        
+        if (barrierOption) {
+          // Trouver l'option correspondante dans la stratégie
+          const strategyOption = strategy.find(opt => opt.type === barrierOption.type);
+          
+          if (strategyOption) {
+            // Approximation de la volatilité implicite par calibration inverse
+            // Essayer différentes valeurs de volatilité et trouver celle qui donne le prix le plus proche
+            let bestSigma = 0.20; // Valeur initiale
+            let bestDiff = Infinity;
+            const steps = 50;
+            
+            for (let i = 0; i <= steps; i++) {
+              const testSigma = 0.01 + (i / steps) * 0.99; // Test de volatilité entre 1% et 100%
+              
+              // Calculer le prix de l'option avec cette volatilité
+              const testPrice = calculateOptionPrice(
+                barrierOption.type,
+                monthResult.forward,
+                barrierOption.strike,
+                params.interestRate / 100,
+                monthResult.timeToMaturity,
+                testSigma
+              );
+              
+              // Calculer la différence avec le prix observé
+              const diff = Math.abs(testPrice - barrierOption.price);
+              
+              // Si cette volatilité donne un prix plus proche, la conserver
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                bestSigma = testSigma;
+              }
+            }
+            
+            // Stocker la volatilité implicite pour ce mois
+            if (bestSigma > 0) {
+              newImpliedVols[monthKey] = bestSigma * 100; // Convertir en pourcentage
+            }
+          }
+        }
       }
     });
     
@@ -3717,9 +3848,29 @@ const Index = () => {
     // Initialiser les volatilités implicites si nécessaire
     if (checked) {
       // Initialiser les volatilités implicites à partir des prix actuels
-      // mais sans forcer l'activation de useImpliedVol
+      initializeImpliedVolatilities();
+      
+      // Activer automatiquement l'utilisation des volatilités implicites
+      if (!useImpliedVol) {
+        setUseImpliedVol(true);
+      }
+      
+      // Recalculer les résultats avec les nouvelles volatilités
+      recalculateResults();
+    }
+  };
+
+  // Gestionnaire pour activer/désactiver l'utilisation des volatilités implicites
+  const handleUseImpliedVolToggle = (checked: boolean) => {
+    setUseImpliedVol(checked);
+    
+    // Si on active les volatilités implicites et qu'il n'y en a pas encore, les initialiser
+    if (checked && Object.keys(impliedVolatilities).length === 0) {
       initializeImpliedVolatilities();
     }
+    
+    // Recalculer les résultats avec les nouvelles volatilités implicites
+    recalculateResults();
   };
 
   return (
@@ -3994,7 +4145,7 @@ const Index = () => {
                     <label className="compact-label">Pricing Method for Barrier Options</label>
                     <div className="flex items-center space-x-4 mt-1">
                       <div className="flex items-center">
-                        <input
+                  <input
                           id="monte-carlo"
                           name="calculation-method"
                           type="radio"
@@ -4754,7 +4905,7 @@ const Index = () => {
                       <Switch
                         id="useImpliedVolUI"
                         checked={useImpliedVol}
-                        onCheckedChange={setUseImpliedVol}
+                        onCheckedChange={handleUseImpliedVolToggle}
                         className="mr-2"
                       />
                       <label htmlFor="useImpliedVolUI" className="text-sm font-medium cursor-pointer">
