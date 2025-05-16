@@ -84,7 +84,7 @@ interface SavedScenario {
   stressTest?: StressTestScenario;
   // Ajouter les données additionnelles du tableau
   useImpliedVol: boolean;
-  impliedVolatilities: {[key: string]: number};
+  impliedVolatilities: OptionImpliedVolatility;
   manualForwards: {[key: string]: number};
   realPrices: {[key: string]: number};
   customOptionPrices?: {[key: string]: {[optionKey: string]: number}};
@@ -92,6 +92,14 @@ interface SavedScenario {
 
 interface ImpliedVolatility {
   [key: string]: number; // Format: "YYYY-MM": volatility
+}
+
+// New interface for per-option implied volatility
+export interface OptionImpliedVolatility {
+  [key: string]: {   // Format: "YYYY-MM"
+    [optionIndex: string]: number;  // Format: "optionType-index": volatility
+    global?: number;  // Global volatility for the month (backward compatibility)
+  };
 }
 
 interface HistoricalDataPoint {
@@ -374,7 +382,7 @@ const Index = () => {
 
   // Add these new states
   const [useImpliedVol, setUseImpliedVol] = useState(false);
-  const [impliedVolatilities, setImpliedVolatilities] = useState<ImpliedVolatility>({});
+  const [impliedVolatilities, setImpliedVolatilities] = useState<OptionImpliedVolatility>({});
 
   // État pour les prix d'options personnalisés
   const [useCustomOptionPrices, setUseCustomOptionPrices] = useState(false);
@@ -445,12 +453,13 @@ const Index = () => {
       }
       
       // Recalculate option prices with current parameters and IV
-      result.optionPrices.forEach(option => {
+      result.optionPrices.forEach((option, optionIndex) => {
         const strike = option.strike;
         
         // Use custom option prices if enabled
-        if (useCustomOptionPrices && customOptionPrices[monthKey]?.[`${option.type}-${option.label}`]) {
-          option.price = customOptionPrices[monthKey][`${option.type}-${option.label}`];
+        const optionKey = `${option.type}-${optionIndex}`;
+        if (useCustomOptionPrices && customOptionPrices[monthKey]?.[optionKey]) {
+          option.price = customOptionPrices[monthKey][optionKey];
         } else {
           // Otherwise recalculate price with current parameters
           // Note: Pass date to calculateOptionPrice to use implied volatility if available
@@ -464,7 +473,8 @@ const Index = () => {
             option.type.includes('barrier') || option.type.includes('knockout') || option.type.includes('knockin') ? 
               (strategy.find(opt => opt.type === option.type)?.volatility || 20) / 100 :
               (strategy.find(opt => opt.type === option.type)?.volatility || 20) / 100,
-            date // Pass date to use implied volatility if enabled
+            date, // Pass date to use implied volatility if enabled
+            optionIndex // Pass optionIndex to use option-specific IV
           );
         }
       });
@@ -540,13 +550,16 @@ const Index = () => {
   };
 
   // Modify the calculateOptionPrice function to handle barrier options
-  const calculateOptionPrice = (type, S, K, r, t, sigma, date?) => {
+  const calculateOptionPrice = (type, S, K, r, t, sigma, date?, optionIndex?) => {
     // Utilize the volatility implied if available
     let effectiveSigma = sigma;
     if (date && useImpliedVol) {
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-      if (impliedVolatilities[monthKey]) {
-        effectiveSigma = impliedVolatilities[monthKey] / 100;
+      const optionKey = optionIndex !== undefined ? `${type}-${optionIndex}` : undefined;
+      const iv = getImpliedVolatility(monthKey, optionKey);
+      
+      if (iv !== null) {
+        effectiveSigma = iv / 100;
       }
     }
 
@@ -1402,11 +1415,12 @@ const Index = () => {
         // Pour les options knockout, nous calculons toujours le prix même si l'option est knocked out
         // Le prix représente la valeur théorique de l'option, indépendamment de son état knocked out
         if (option.type === 'call' || option.type === 'put') {
-          // Use existing Black-Scholes for vanilla options
-          const effectiveSigma = useImpliedVol && impliedVolatilities[monthKey] ? 
-            impliedVolatilities[monthKey] / 100 : 
-            option.volatility / 100;
-            
+          // Utiliser la volatilité implicite spécifique à l'option si disponible
+          const optionKey = `${option.type}-${optIndex}`;
+          const iv = getImpliedVolatility(monthKey, optionKey);
+          const effectiveSigma = useImpliedVol && iv !== undefined && iv !== null
+            ? iv / 100
+            : option.volatility / 100;
           // For standard options, use Black-Scholes
           const d1 = (Math.log(forward/strike) + (params.interestRate/100 + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
           const d2 = d1 - effectiveSigma*Math.sqrt(t);
@@ -1432,8 +1446,9 @@ const Index = () => {
             undefined;
             
           // Use implied volatility if available, just like with standard options
+          const optionKey = `${option.type}-${optIndex}`;
           const effectiveSigma = useImpliedVol && impliedVolatilities[monthKey] ? 
-            impliedVolatilities[monthKey] / 100 : 
+            (getImpliedVolatility(monthKey, optionKey) || option.volatility) / 100 : 
             option.volatility / 100;
             
           // Use closed-form solution if enabled (for both simple and double barrier options)
@@ -2138,18 +2153,44 @@ const Index = () => {
 
   // Ajoutez cette fonction pour gérer les changements de volatilité implicite
   const handleImpliedVolChange = (monthKey: string, value: number) => {
-    setImpliedVolatilities(prev => ({
-      ...prev,
-      [monthKey]: value
-    }));
-    
-    // Activer automatiquement l'utilisation des volatilités implicites
-    if (!useImpliedVol) {
-      setUseImpliedVol(true);
+    setImpliedVolatilities(prev => {
+      const updated = { ...prev };
+      if (!updated[monthKey]) {
+        updated[monthKey] = {};
+      }
+      updated[monthKey].global = value;
+      return updated;
+    });
+    calculateResults();
+  };
+  
+  // Helper function to get implied volatility with the new structure
+  const getImpliedVolatility = (monthKey: string, optionKey?: string) => {
+    if (!impliedVolatilities[monthKey]) {
+      return null;
     }
     
-    // Recalculer les résultats immédiatement avec les nouvelles volatilités implicites
-    recalculateResults();
+    // If an optionKey is provided and that specific IV exists, return it
+    if (optionKey && impliedVolatilities[monthKey][optionKey] !== undefined) {
+      return impliedVolatilities[monthKey][optionKey];
+    }
+    
+    // Otherwise fall back to the global month IV
+    return impliedVolatilities[monthKey].global;
+  };
+  
+  // New function to handle per-option implied volatility changes
+  const handleOptionImpliedVolChange = (monthKey: string, optionKey: string, value: number) => {
+    setImpliedVolatilities(prev => {
+      const updated = { ...prev };
+      if (!updated[monthKey]) {
+        updated[monthKey] = {};
+      }
+      updated[monthKey][optionKey] = value;
+      return updated;
+    });
+    // Recalculer immédiatement les résultats après chaque changement de valeur
+    calculateResults();
   };
 
   // Fonction pour calculer le prix du swap (moyenne des forwards actualisés)
@@ -2290,20 +2331,24 @@ const Index = () => {
 
   // Ajouter cette fonction pour mettre à jour les prix réels et les IV après le calcul des stats mensuelles
   const updateBacktestValues = (stats: MonthlyStats[]) => {
-    const newRealPrices: { [key: string]: number } = {};
-    const newImpliedVols: { [key: string]: number } = {};
+    // Récupérer tous les mois disponibles dans les statistiques
+    const newRealPrices: {[key: string]: number} = {};
+    const newImpliedVols: OptionImpliedVolatility = {};
 
-    // Convertir les statistiques mensuelles en mappings par mois
+    // Parcourir les statistiques mensuelles
     stats.forEach(stat => {
-      const [year, month] = stat.month.split('-');
-      const monthKey = `${year}-${Number(month)}`; // Format: "YYYY-M"
+      const [year, month] = stat.month.split('-').map(Number);
+      const monthKey = `${year}-${month}`;
       
-      // Utiliser la moyenne comme prix réel
+      // Mettre à jour les prix réels
       newRealPrices[monthKey] = stat.avgPrice;
       
-      // Utiliser la volatilité historique comme IV (si disponible)
+      // Si une volatilité est disponible, la stocker
       if (stat.volatility !== null) {
-        newImpliedVols[monthKey] = stat.volatility * 100; // Convertir en pourcentage
+        if (!newImpliedVols[monthKey]) {
+          newImpliedVols[monthKey] = {};
+        }
+        newImpliedVols[monthKey].global = stat.volatility;
       }
     });
 
@@ -3873,10 +3918,19 @@ const Index = () => {
           );
           
           // Mettre à jour la volatilité implicite pour ce mois
-          setImpliedVolatilities(prev => ({
-            ...prev,
-            [monthKey]: impliedVol
-          }));
+          setImpliedVolatilities(prev => {
+            const updated = { ...prev };
+            if (!updated[monthKey]) {
+              updated[monthKey] = {};
+            }
+            updated[monthKey].global = impliedVol;
+            return updated;
+          });
+          
+          // Activer automatiquement l'utilisation des volatilités implicites
+          if (!useImpliedVol) {
+            setUseImpliedVol(true);
+          }
           }
           // Pour les options à barrière (avec knockout ou knockin dans leur type)
           else if (option.type.includes('knockout') || option.type.includes('knockin')) {
@@ -3884,46 +3938,49 @@ const Index = () => {
             const strategyOption = strategy.find(opt => opt.type === option.type);
             
             if (strategyOption) {
-              // Approximation de la volatilité implicite par calibration inverse
-              // Essayer différentes valeurs de volatilité et trouver celle qui donne le prix le plus proche
-              let bestSigma = 0.20; // Valeur initiale
-              let bestDiff = Infinity;
-              const steps = 50;
-              
-              for (let i = 0; i <= steps; i++) {
-                const testSigma = 0.01 + (i / steps) * 0.99; // Test de volatilité entre 1% et 100%
+              // Calculer la volatilité implicite uniquement si l'utilisateur a activé le mode volatilité implicite
+              if (useImpliedVol) {
+                // Approximation de la volatilité implicite par calibration inverse
+                // Essayer différentes valeurs de volatilité et trouver celle qui donne le prix le plus proche
+                let bestSigma = 0.20; // Valeur initiale
+                let bestDiff = Infinity;
+                const steps = 50;
                 
-                // Calculer le prix de l'option avec cette volatilité
-                const testPrice = calculateOptionPrice(
-                  option.type,
-                  monthResult.forward,
-                  option.strike,
-                  params.interestRate / 100,
-                  monthResult.timeToMaturity,
-                  testSigma
-                );
-                
-                // Calculer la différence avec le prix observé
-                const diff = Math.abs(testPrice - newPrice);
-                
-                // Si cette volatilité donne un prix plus proche, la conserver
-                if (diff < bestDiff) {
-                  bestDiff = diff;
-                  bestSigma = testSigma;
+                for (let i = 0; i <= steps; i++) {
+                  const testSigma = 0.01 + (i / steps) * 0.99; // Test de volatilité entre 1% et 100%
+                  
+                  // Calculer le prix de l'option avec cette volatilité
+                  const testPrice = calculateOptionPrice(
+                    option.type,
+                    monthResult.forward,
+                    option.strike,
+                    params.interestRate / 100,
+                    monthResult.timeToMaturity,
+                    testSigma
+                  );
+                  
+                  // Calculer la différence avec le prix observé
+                  const diff = Math.abs(testPrice - newPrice);
+                  
+                  // Si cette volatilité donne un prix plus proche, la conserver
+                  if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestSigma = testSigma;
+                  }
                 }
+                
+                // Mettre à jour la volatilité implicite pour ce mois
+                setImpliedVolatilities(prev => {
+                  const updated = { ...prev };
+                  if (!updated[monthKey]) {
+                    updated[monthKey] = {};
+                  }
+                  updated[monthKey].global = bestSigma * 100; // Convertir en pourcentage
+                  return updated;
+                });
               }
-              
-              // Mettre à jour la volatilité implicite pour ce mois
-              setImpliedVolatilities(prev => ({
-                ...prev,
-                [monthKey]: bestSigma * 100 // Convertir en pourcentage
-              }));
+              // Pour les options à barrière, ne pas activer automatiquement la volatilité implicite
             }
-          }
-          
-          // Activer automatiquement l'utilisation des volatilités implicites
-          if (!useImpliedVol) {
-            setUseImpliedVol(true);
           }
           
           // Recalculer les résultats avec les nouvelles volatilités implicites
@@ -3938,85 +3995,79 @@ const Index = () => {
     if (!results) return;
     
     // Stocker les nouvelles volatilités implicites
-    const newImpliedVols: {[key: string]: number} = {};
+    const newImpliedVols: OptionImpliedVolatility = {};
     
     // Pour chaque mois dans les résultats
     results.forEach(monthResult => {
       const date = new Date(monthResult.date);
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       
-      // Essayer d'abord de trouver une option standard (call ou put) pour ce mois
-      const standardOption = monthResult.optionPrices.find(opt => 
-        opt.type === 'call' || opt.type === 'put'
-      );
+      // Initialiser la structure du mois
+      newImpliedVols[monthKey] = {};
       
-      // Si une option standard est trouvée, utiliser la méthode standard de calcul de IV
-      if (standardOption) {
-        // Calculer la volatilité implicite à partir du prix actuel
-        const impliedVol = calculateImpliedVolatility(
-          standardOption.type,
-          monthResult.forward,      // Utiliser le prix forward comme S
-          standardOption.strike,    // Prix d'exercice
-          params.interestRate / 100, // Taux sans risque (conversion en décimal)
-          monthResult.timeToMaturity, // Temps jusqu'à maturité
-          standardOption.price       // Prix actuel de l'option
-        );
+      // Traiter chaque option dans ce mois
+      monthResult.optionPrices.forEach((option, optionIndex) => {
+        // Ignorer les swaps
+        if (option.type === 'swap') return;
         
-        // Stocker la volatilité implicite pour ce mois
-        if (impliedVol > 0) {
-          newImpliedVols[monthKey] = impliedVol;
-        }
-      } 
-      // Sinon, essayer de trouver une option avec barrière
-      else {
-        const barrierOption = monthResult.optionPrices.find(opt => 
-          opt.type.includes('knockout') || opt.type.includes('knockin')
-        );
+        // Trouver l'option correspondante dans la stratégie
+        const strategyOption = strategy.find(opt => opt.type === option.type);
+        if (!strategyOption) return;
         
-        if (barrierOption) {
-          // Trouver l'option correspondante dans la stratégie
-          const strategyOption = strategy.find(opt => opt.type === barrierOption.type);
+        // Calculer la volatilité implicite pour cette option
+        let impliedVol = strategyOption.volatility;
+        
+        // Pour les options standard (call/put), calculer une vraie IV
+        if (option.type === 'call' || option.type === 'put') {
+          const calculatedIV = calculateImpliedVolatility(
+            option.type,
+            monthResult.forward,
+            option.strike,
+            params.interestRate / 100,
+            monthResult.timeToMaturity,
+            option.price
+          );
           
-          if (strategyOption) {
-            // Approximation de la volatilité implicite par calibration inverse
-            // Essayer différentes valeurs de volatilité et trouver celle qui donne le prix le plus proche
-            let bestSigma = 0.20; // Valeur initiale
-            let bestDiff = Infinity;
-            const steps = 50;
-            
-            for (let i = 0; i <= steps; i++) {
-              const testSigma = 0.01 + (i / steps) * 0.99; // Test de volatilité entre 1% et 100%
-              
-              // Calculer le prix de l'option avec cette volatilité
-              const testPrice = calculateOptionPrice(
-                barrierOption.type,
-                monthResult.forward,
-                barrierOption.strike,
-                params.interestRate / 100,
-                monthResult.timeToMaturity,
-                testSigma
-              );
-              
-              // Calculer la différence avec le prix observé
-              const diff = Math.abs(testPrice - barrierOption.price);
-              
-              // Si cette volatilité donne un prix plus proche, la conserver
-              if (diff < bestDiff) {
-                bestDiff = diff;
-                bestSigma = testSigma;
-              }
-            }
-            
-            // Stocker la volatilité implicite pour ce mois
-            if (bestSigma > 0) {
-              newImpliedVols[monthKey] = bestSigma * 100; // Convertir en pourcentage
-            }
+          if (calculatedIV > 0) {
+            impliedVol = calculatedIV;
           }
         }
+        
+        // Stocker la volatilité pour cette option spécifique
+        const optionKey = `${option.type}-${optionIndex}`;
+        newImpliedVols[monthKey][optionKey] = impliedVol;
+      });
+      
+      // Définir une volatilité globale (moyenne ou première option standard)
+      let standardOptionFound = false;
+      
+      // D'abord, essayer de trouver une option standard
+      for (let i = 0; i < monthResult.optionPrices.length; i++) {
+        const option = monthResult.optionPrices[i];
+        if (option.type === 'call' || option.type === 'put') {
+          const optionKey = `${option.type}-${i}`;
+          newImpliedVols[monthKey].global = newImpliedVols[monthKey][optionKey];
+          standardOptionFound = true;
+          break;
+        }
+      }
+      
+      // Si aucune option standard, utiliser la moyenne
+      if (!standardOptionFound) {
+        let sum = 0;
+        let count = 0;
+        
+        for (const optionKey in newImpliedVols[monthKey]) {
+          if (optionKey !== 'global') {
+            sum += newImpliedVols[monthKey][optionKey];
+            count++;
+          }
+        }
+        
+        newImpliedVols[monthKey].global = count > 0 ? sum / count : 20; // Valeur par défaut
       }
     });
     
-    // Mettre à jour les volatilités implicites
     setImpliedVolatilities(newImpliedVols);
   };
 
@@ -4049,7 +4100,7 @@ const Index = () => {
     }
     
     // Recalculer les résultats avec les nouvelles volatilités implicites
-    recalculateResults();
+    calculateResults(); // Utiliser directement calculateResults au lieu de recalculateResults pour une mise à jour complète
   };
 
   return (
@@ -5106,9 +5157,13 @@ const Index = () => {
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Time to Maturity</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-blue-500/5">Forward Price</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/5">Real Price</th>
-                      {useImpliedVol && (
-                            <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">IV (%)</th>
-                      )}
+                      {useImpliedVol && results[0].optionPrices.map((opt, i) => (
+                        opt.type !== 'swap' && (
+                          <th key={`iv-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">
+                            IV {opt.label} (%)
+                          </th>
+                        )
+                      ))}
                       {results[0].optionPrices.map((opt, i) => (
                             <th key={`opt-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b">{opt.label}</th>
                           ))}
@@ -5183,14 +5238,14 @@ const Index = () => {
                             disabled={realPriceParams.useSimulation}
                           />
                         </td>
-                          {useImpliedVol && (
-                                <td className="px-3 py-2 text-sm border-b border-border/30 bg-amber-500/5">
+                          {useImpliedVol && results[0].optionPrices.map((opt, i) => (
+                            opt.type !== 'swap' && (
+                              <td key={`iv-${i}`} className="px-3 py-2 text-sm border-b border-border/30 bg-amber-500/5">
                               <div className="flex flex-col">
                               <Input
                                 type="number"
-                                value={impliedVolatilities[monthKey] || ''}
-                                onChange={(e) => handleImpliedVolChange(monthKey, Number(e.target.value))}
-                                onBlur={() => calculateResults()}
+                                  value={impliedVolatilities[monthKey]?.[`${opt.type}-${i}`] || ''}
+                                  onChange={(e) => handleOptionImpliedVolChange(monthKey, `${opt.type}-${i}`, Number(e.target.value))}
                                   className="compact-input w-24"
                                 placeholder="Enter IV"
                               />
@@ -5199,48 +5254,11 @@ const Index = () => {
                                 )}
                               </div>
                             </td>
-                          )}
-                          {/* Afficher d'abord les prix des swaps */}
-                          {row.optionPrices
-                            .filter(opt => opt.type === 'swap')
-                                .map((opt, j) => {
-                                  // Créer une clé unique pour ce swap à cette date
-                                  const date = new Date(row.date);
-                                  const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                                  const optionKey = `${opt.type}-${j}`;
-                                  
-                                  // Récupérer le prix personnalisé s'il existe, ou utiliser le prix calculé
-                                  const customPrice = 
-                                    customOptionPrices[monthKey]?.[optionKey] !== undefined
-                                      ? customOptionPrices[monthKey][optionKey]
-                                      : opt.price;
-                                  
-                                  return (
-                                    <td key={`swap-${j}`} className="px-3 py-2 text-sm border-b border-border/30">
-                                      {useCustomOptionPrices ? (
-                                        <Input
-                                          type="number"
-                                          value={customPrice.toFixed(2)}
-                                          onChange={(e) => {
-                                            const newValue = e.target.value === '' ? 0 : Number(e.target.value);
-                                            // Mettre à jour les prix personnalisés et calculer la volatilité implicite
-                                            handleCustomPriceChange(monthKey, optionKey, newValue);
-                                          }}
-                                          onBlur={() => recalculateResults()}
-                                          className="compact-input w-24 text-right"
-                                          step="0.01"
-                                        />
-                                      ) : (
-                                        <span className="font-mono">{opt.price.toFixed(2)}</span>
-                                      )}
-                                    </td>
-                                  );
-                                })}
-                          {/* Puis afficher les prix des options */}
-                          {row.optionPrices
-                            .filter(opt => opt.type !== 'swap')
-                                .map((opt, j) => {
-                                  // Créer une clé unique pour cet option à cette date
+                            )
+                          ))}
+                          {/* Afficher les prix des options dans le même ordre que les en-têtes */}
+                          {row.optionPrices.map((opt, j) => {
+                            // Créer une clé unique pour cette option à cette date
                                   const date = new Date(row.date);
                                   const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
                                   const optionKey = `${opt.type}-${j}`;

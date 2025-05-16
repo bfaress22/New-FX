@@ -1,3 +1,5 @@
+import { OptionImpliedVolatility } from '../pages/Index';
+
 export interface CustomPeriod {
   maturityDate: string;
   volume: number;
@@ -30,5 +32,5 @@ export interface CalculatorState {
     customScenario: any;
     stressTestScenarios: Record<string, any>;
     useImpliedVol: boolean;
-    impliedVolatilities: Record<string, number | null>;
+    impliedVolatilities: OptionImpliedVolatility;
   } 

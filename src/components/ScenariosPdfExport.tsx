@@ -102,7 +102,7 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         ['Start Date', scenario.params.startDate],
         ['Months to Hedge', scenario.params.monthsToHedge.toString()],
         ['Interest Rate', `${scenario.params.interestRate}%`],
-        ['Total Volume', scenario.params.totalVolume.toLocaleString()],
+        ['Total Volume', scenario.params.totalVolume.toString()],
         ['Spot Price', scenario.params.spotPrice.toFixed(2)]
       ];
 
@@ -220,22 +220,10 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
 
       const summaryStats = [
         ['Metric', 'Value'],
-        ['Total Cost with Hedging', totalHedgedCost.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        })],
-        ['Total Cost without Hedging', totalUnhedgedCost.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        })],
-        ['Total P&L', totalPnL.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        })],
-        ['Total Strategy Premium', totalStrategyPremium.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        })],
+        ['Total Cost with Hedging', totalHedgedCost.toFixed(2)],
+        ['Total Cost without Hedging', totalUnhedgedCost.toFixed(2)],
+        ['Total P&L', totalPnL.toFixed(2)],
+        ['Total Strategy Premium', totalStrategyPremium.toFixed(2)],
         ['Cost Reduction', `${costReduction}%`],
         ['Strike Target', strikeTarget]
       ];
@@ -391,10 +379,8 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       
       // Fonction pour formater les valeurs de P&L
       const formatPnLForPdf = (value: number) => {
-        return (value / 1000).toLocaleString(undefined, {
-          minimumFractionDigits: 1,
-          maximumFractionDigits: 1
-        });
+        // Simplifier le formatage pour éviter les problèmes d'affichage dans le PDF
+        return value.toFixed(1);
       };
       
       // Préparer les données pour le tableau
@@ -490,10 +476,10 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         
         return [
           year,
-          hedgedCost.toLocaleString(undefined, { maximumFractionDigits: 0 }),
-          unhedgedCost.toLocaleString(undefined, { maximumFractionDigits: 0 }),
-          deltaPnL.toLocaleString(undefined, { maximumFractionDigits: 0 }),
-          strategyPremium.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+          hedgedCost.toFixed(0),
+          unhedgedCost.toFixed(0),
+          deltaPnL.toFixed(0),
+          strategyPremium.toFixed(0),
           strikeTarget,
           `${costReduction}%`
         ];
@@ -548,13 +534,13 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       
       const detailedResults = scenario.results.map(row => [
         row.date,
-        row.forward.toLocaleString(undefined, { maximumFractionDigits: 2 }),
-        row.realPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }),
-        row.strategyPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }),
-        row.totalPayoff.toLocaleString(undefined, { maximumFractionDigits: 2 }),
-        row.hedgedCost.toLocaleString(undefined, { maximumFractionDigits: 0 }),
-        row.unhedgedCost.toLocaleString(undefined, { maximumFractionDigits: 0 }),
-        row.deltaPnL.toLocaleString(undefined, { maximumFractionDigits: 0 })
+        row.forward.toFixed(2),
+        row.realPrice.toFixed(2),
+        row.strategyPrice.toFixed(2),
+        row.totalPayoff.toFixed(2),
+        row.hedgedCost.toFixed(0),
+        row.unhedgedCost.toFixed(0),
+        row.deltaPnL.toFixed(0)
       ]);
 
       (pdf as any).autoTable({
