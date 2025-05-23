@@ -3916,17 +3916,15 @@ const Index = () => {
             monthResult.timeToMaturity, // Temps jusqu'à maturité
             newPrice              // Prix observé de l'option
           );
-          
-          // Mettre à jour la volatilité implicite pour ce mois
-          setImpliedVolatilities(prev => {
-            const updated = { ...prev };
-            if (!updated[monthKey]) {
-              updated[monthKey] = {};
-            }
-            updated[monthKey].global = impliedVol;
-            return updated;
-          });
-          
+            // Mettre à jour la volatilité implicite pour cette option spécifique
+            setImpliedVolatilities(prev => {
+              const updated = { ...prev };
+              if (!updated[monthKey]) {
+                updated[monthKey] = {};
+              }
+              updated[monthKey][optionIndex] = impliedVol;
+              return updated;
+            });
           // Activer automatiquement l'utilisation des volatilités implicites
           if (!useImpliedVol) {
             setUseImpliedVol(true);
@@ -3934,22 +3932,14 @@ const Index = () => {
           }
           // Pour les options à barrière (avec knockout ou knockin dans leur type)
           else if (option.type.includes('knockout') || option.type.includes('knockin')) {
-            // Trouver l'option correspondante dans la stratégie pour obtenir les valeurs de barrière
             const strategyOption = strategy.find(opt => opt.type === option.type);
-            
             if (strategyOption) {
-              // Calculer la volatilité implicite uniquement si l'utilisateur a activé le mode volatilité implicite
               if (useImpliedVol) {
-                // Approximation de la volatilité implicite par calibration inverse
-                // Essayer différentes valeurs de volatilité et trouver celle qui donne le prix le plus proche
                 let bestSigma = 0.20; // Valeur initiale
                 let bestDiff = Infinity;
                 const steps = 50;
-                
                 for (let i = 0; i <= steps; i++) {
                   const testSigma = 0.01 + (i / steps) * 0.99; // Test de volatilité entre 1% et 100%
-                  
-                  // Calculer le prix de l'option avec cette volatilité
                   const testPrice = calculateOptionPrice(
                     option.type,
                     monthResult.forward,
@@ -3958,31 +3948,24 @@ const Index = () => {
                     monthResult.timeToMaturity,
                     testSigma
                   );
-                  
-                  // Calculer la différence avec le prix observé
                   const diff = Math.abs(testPrice - newPrice);
-                  
-                  // Si cette volatilité donne un prix plus proche, la conserver
                   if (diff < bestDiff) {
                     bestDiff = diff;
                     bestSigma = testSigma;
                   }
                 }
-                
-                // Mettre à jour la volatilité implicite pour ce mois
+                // Mettre à jour la volatilité implicite pour cette option spécifique
                 setImpliedVolatilities(prev => {
                   const updated = { ...prev };
                   if (!updated[monthKey]) {
                     updated[monthKey] = {};
                   }
-                  updated[monthKey].global = bestSigma * 100; // Convertir en pourcentage
+                  updated[monthKey][optionIndex] = bestSigma * 100; // Convertir en pourcentage
                   return updated;
                 });
               }
-              // Pour les options à barrière, ne pas activer automatiquement la volatilité implicite
             }
           }
-          
           // Recalculer les résultats avec les nouvelles volatilités implicites
           recalculateResults();
         }
