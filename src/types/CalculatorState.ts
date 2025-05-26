@@ -27,7 +27,7 @@ export interface CalculatorState {
       numSimulations: number;
     };
     barrierOptionSimulations: number;
-    useClosedFormBarrier: boolean;
+    barrierPricingModel: 'monte-carlo' | 'closed-form';
     activeTab: string;
     customScenario: any;
     stressTestScenarios: Record<string, any>;
