@@ -163,8 +163,18 @@ const SavedScenarios = () => {
                       <li>Start Date: {scenario.params.startDate}</li>
                       <li>Months to Hedge: {scenario.params.monthsToHedge}</li>
                       <li>Interest Rate: {scenario.params.interestRate}%</li>
-                      <li>Total Volume: {scenario.params.totalVolume}</li>
-                      <li>Spot Price: {scenario.params.spotPrice}</li>
+                      {scenario.params.baseVolume && scenario.params.quoteVolume ? (
+                        <>
+                          <li>Base Volume ({scenario.params.currencyPair?.base || 'BASE'}): {scenario.params.baseVolume.toLocaleString()}</li>
+                          <li>Quote Volume ({scenario.params.currencyPair?.quote || 'QUOTE'}): {Math.round(scenario.params.quoteVolume).toLocaleString()}</li>
+                          <li>Rate: {scenario.params.spotPrice?.toFixed(4)}</li>
+                        </>
+                      ) : (
+                        <>
+                          <li>Total Volume: {scenario.params.totalVolume?.toLocaleString()}</li>
+                          <li>Spot Price: {scenario.params.spotPrice}</li>
+                        </>
+                      )}
                     </ul>
                   </div>
                   {scenario.stressTest && (

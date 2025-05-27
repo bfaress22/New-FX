@@ -23,7 +23,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter }
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Plus, Trash2, Save, X, AlertTriangle, Table } from 'lucide-react';
+import { Plus, Trash2, Save, X, AlertTriangle, Table, PlusCircle, Trash } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from 'react-router-dom';
 import { CalculatorState, CustomPeriod } from '@/types/CalculatorState';
@@ -37,6 +37,8 @@ import PayoffChart from '../components/PayoffChart';
 import { SimulationData } from '../components/MonteCarloVisualization';
 import { Switch } from "@/components/ui/switch";
 import { v4 as uuidv4 } from 'uuid';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { toast } from "@/hooks/use-toast";
 
 // Currency Pair interface
 interface CurrencyPair {
@@ -53,7 +55,9 @@ interface FXStrategyParams {
   monthsToHedge: number;
   domesticRate: number;
   foreignRate: number;
-  totalVolume: number;
+  totalVolume: number; // Keep for backward compatibility
+  baseVolume: number;   // Volume in base currency
+  quoteVolume: number;  // Volume in quote currency
   spotPrice: number;
   currencyPair: CurrencyPair;
   useCustomPeriods: boolean;
@@ -118,8 +122,13 @@ interface SavedScenario {
     startDate: string;
     monthsToHedge: number;
     interestRate: number;
+    domesticRate?: number;
+    foreignRate?: number;
     totalVolume: number;
+    baseVolume?: number;
+    quoteVolume?: number;
     spotPrice: number;
+    currencyPair?: CurrencyPair;
     useCustomPeriods?: boolean;
     customPeriods?: CustomPeriod[];
   };
@@ -247,40 +256,27 @@ const CURRENCY_PAIRS: CurrencyPair[] = [
   { symbol: "AUD/JPY", name: "Australian Dollar/Japanese Yen", base: "AUD", quote: "JPY", category: "crosses", defaultSpotRate: 98.40 },
   { symbol: "CAD/JPY", name: "Canadian Dollar/Japanese Yen", base: "CAD", quote: "JPY", category: "crosses", defaultSpotRate: 109.52 },
   { symbol: "CHF/JPY", name: "Swiss Franc/Japanese Yen", base: "CHF", quote: "JPY", category: "crosses", defaultSpotRate: 169.01 },
-  { symbol: "EUR/CAD", name: "Euro/Canadian Dollar", base: "EUR", quote: "CAD", category: "crosses", defaultSpotRate: 1.4810 },
-  { symbol: "GBP/AUD", name: "British Pound/Australian Dollar", base: "GBP", quote: "AUD", category: "crosses", defaultSpotRate: 1.9230 },
-  { symbol: "GBP/CAD", name: "British Pound/Canadian Dollar", base: "GBP", quote: "CAD", category: "crosses", defaultSpotRate: 1.7270 },
-  { symbol: "AUD/CAD", name: "Australian Dollar/Canadian Dollar", base: "AUD", quote: "CAD", category: "crosses", defaultSpotRate: 0.8985 },
-  { symbol: "NZD/JPY", name: "New Zealand Dollar/Japanese Yen", base: "NZD", quote: "JPY", category: "crosses", defaultSpotRate: 90.00 },
-  { symbol: "AUD/CHF", name: "Australian Dollar/Swiss Franc", base: "AUD", quote: "CHF", category: "crosses", defaultSpotRate: 0.5823 },
-  
-  // Emerging Markets & Other Currencies
-  { symbol: "USD/TRY", name: "US Dollar/Turkish Lira", base: "USD", quote: "TRY", category: "others", defaultSpotRate: 32.85 },
-  { symbol: "USD/SGD", name: "US Dollar/Singapore Dollar", base: "USD", quote: "SGD", category: "others", defaultSpotRate: 1.3385 },
-  { symbol: "USD/THB", name: "US Dollar/Thai Baht", base: "USD", quote: "THB", category: "others", defaultSpotRate: 35.65 },
-  { symbol: "USD/IDR", name: "US Dollar/Indonesian Rupiah", base: "USD", quote: "IDR", category: "others", defaultSpotRate: 15625.0 },
-  { symbol: "USD/MXN", name: "US Dollar/Mexican Peso", base: "USD", quote: "MXN", category: "others", defaultSpotRate: 17.25 },
-  { symbol: "USD/BRL", name: "US Dollar/Brazilian Real", base: "USD", quote: "BRL", category: "others", defaultSpotRate: 5.15 },
-  { symbol: "USD/CNY", name: "US Dollar/Chinese Yuan", base: "USD", quote: "CNY", category: "others", defaultSpotRate: 7.25 },
-  { symbol: "USD/INR", name: "US Dollar/Indian Rupee", base: "USD", quote: "INR", category: "others", defaultSpotRate: 83.15 },
-  { symbol: "USD/KRW", name: "US Dollar/South Korean Won", base: "USD", quote: "KRW", category: "others", defaultSpotRate: 1335.50 },
-  { symbol: "USD/ZAR", name: "US Dollar/South African Rand", base: "USD", quote: "ZAR", category: "others", defaultSpotRate: 18.75 },
-  { symbol: "USD/RUB", name: "US Dollar/Russian Ruble", base: "USD", quote: "RUB", category: "others", defaultSpotRate: 97.50 },
-  { symbol: "USD/NOK", name: "US Dollar/Norwegian Krone", base: "USD", quote: "NOK", category: "others", defaultSpotRate: 10.85 },
-  { symbol: "USD/SEK", name: "US Dollar/Swedish Krona", base: "USD", quote: "SEK", category: "others", defaultSpotRate: 10.45 },
-  { symbol: "USD/DKK", name: "US Dollar/Danish Krone", base: "USD", quote: "DKK", category: "others", defaultSpotRate: 6.90 },
-  { symbol: "USD/PLN", name: "US Dollar/Polish Zloty", base: "USD", quote: "PLN", category: "others", defaultSpotRate: 4.05 },
-  { symbol: "USD/CZK", name: "US Dollar/Czech Koruna", base: "USD", quote: "CZK", category: "others", defaultSpotRate: 22.85 },
-  { symbol: "USD/HUF", name: "US Dollar/Hungarian Forint", base: "USD", quote: "HUF", category: "others", defaultSpotRate: 365.50 },
-  { symbol: "EUR/NOK", name: "Euro/Norwegian Krone", base: "EUR", quote: "NOK", category: "others", defaultSpotRate: 11.78 },
-  { symbol: "EUR/SEK", name: "Euro/Swedish Krona", base: "EUR", quote: "SEK", category: "others", defaultSpotRate: 11.34 },
-  { symbol: "EUR/DKK", name: "Euro/Danish Krone", base: "EUR", quote: "DKK", category: "others", defaultSpotRate: 7.49 },
-  { symbol: "EUR/PLN", name: "Euro/Polish Zloty", base: "EUR", quote: "PLN", category: "others", defaultSpotRate: 4.39 },
-  { symbol: "EUR/CZK", name: "Euro/Czech Koruna", base: "EUR", quote: "CZK", category: "others", defaultSpotRate: 24.78 },
-  { symbol: "EUR/TRY", name: "Euro/Turkish Lira", base: "EUR", quote: "TRY", category: "others", defaultSpotRate: 35.65 },
 ];
 
+// State pour les paires de devises personnalisées
 const Index = () => {
+  const [customCurrencyPairs, setCustomCurrencyPairs] = useState<CurrencyPair[]>(() => {
+    const savedPairs = localStorage.getItem('customCurrencyPairs');
+    return savedPairs ? JSON.parse(savedPairs) : [];
+  });
+
+  // Fonction pour sauvegarder les paires personnalisées
+  const saveCustomCurrencyPairs = (pairs: CurrencyPair[]) => {
+    localStorage.setItem('customCurrencyPairs', JSON.stringify(pairs));
+    setCustomCurrencyPairs(pairs);
+  };
+
+  // Fonction pour ajouter une paire de devise manuellement
+  const addCustomCurrencyPair = (newPair: CurrencyPair) => {
+    const updated = [...customCurrencyPairs, newPair];
+    saveCustomCurrencyPairs(updated);
+  };
+
   // Add state for active tab
   const [activeTab, setActiveTab] = useState(() => {
     const savedState = localStorage.getItem('calculatorState');
@@ -290,18 +286,34 @@ const Index = () => {
   // Basic parameters state
   const [params, setParams] = useState(() => {
     const savedState = localStorage.getItem('calculatorState');
-    return savedState ? JSON.parse(savedState).params : {
+    const defaultParams = {
       startDate: new Date().toISOString().split('T')[0],
       monthsToHedge: 12,
       interestRate: 2.0, // Domestic rate for backward compatibility
       domesticRate: 1.0, // EUR rate
       foreignRate: 0.5, // USD rate
       totalVolume: 10000000,
+      baseVolume: 10000000, // Default base volume
+      quoteVolume: 10000000 * CURRENCY_PAIRS[0].defaultSpotRate, // Calculated quote volume
       spotPrice: CURRENCY_PAIRS[0].defaultSpotRate, // Default to EUR/USD spot rate
       currencyPair: CURRENCY_PAIRS[0], // Default to EUR/USD
       useCustomPeriods: false,
       customPeriods: []
     };
+    
+    if (savedState) {
+      const savedParams = JSON.parse(savedState).params;
+      // Ensure backward compatibility - calculate missing volumes if needed
+      if (!savedParams.baseVolume) {
+        savedParams.baseVolume = savedParams.totalVolume || 10000000;
+      }
+      if (!savedParams.quoteVolume) {
+        savedParams.quoteVolume = (savedParams.totalVolume || 10000000) * (savedParams.spotPrice || 1.0850);
+      }
+      return savedParams;
+    }
+    
+    return defaultParams;
   });
 
   // Keep track of initial spot price
@@ -377,96 +389,221 @@ const Index = () => {
     };
   });
 
-  // Stress Test Scenarios
+  // Stress Test Scenarios - Updated to reflect historical FX crisis scenarios
   const [stressTestScenarios, setStressTestScenarios] = useState<Record<string, StressTestScenario>>(() => {
     const savedState = localStorage.getItem('calculatorState');
-    return savedState ? JSON.parse(savedState).stressTestScenarios : {
+    // Force loading of new scenarios by checking if we have all expected scenarios
+    const defaultScenarios = {
       base: {
         name: "Base Case",
-        description: "Normal market conditions",
-        volatility: 0.2,
-        drift: 0.01,
+        description: "Normal market conditions - typical FX volatility of 10-15%",
+        volatility: 0.12,
+        drift: 0.005,
         priceShock: 0,
         forwardBasis: 0,
-        isEditable: true
+        isEditable: true,
+        isHistorical: false
       },
-      highVol: {
-        name: "High Volatility",
-        description: "Double volatility scenario",
-        volatility: 0.4,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: 0,
-        isEditable: true
+      
+      // Historical Crisis Scenarios
+      gfc2008: {
+        name: "Global Financial Crisis (2008)",
+        description: "Based on 2008 crisis: extreme volatility, flight to USD/CHF/JPY safe havens",
+        volatility: 0.35,
+        drift: -0.015,
+        priceShock: -0.12,
+        forwardBasis: 0.008,
+        isEditable: true,
+        isHistorical: true
       },
-      crash: {
-        name: "Market Crash",
-        description: "High volatility, negative drift, price shock",
-        volatility: 0.5,
-        drift: -0.03,
-        priceShock: -0.2,
-        forwardBasis: 0,
-        isEditable: true
+      
+      blackWednesday: {
+        name: "Black Wednesday (1992)",
+        description: "ERM crisis: GBP devaluation, central bank intervention failure",
+        volatility: 0.45,
+        drift: -0.025,
+        priceShock: -0.15,
+        forwardBasis: 0.015,
+        isEditable: true,
+        isHistorical: true
       },
-      bull: {
-        name: "Bull Market",
-        description: "Low volatility, positive drift, upward shock",
-        volatility: 0.15,
-        drift: 0.02,
-        priceShock: 0.1,
-        forwardBasis: 0,
-        isEditable: true
+      
+      asianCrisis: {
+        name: "Asian Financial Crisis (1997-98)",
+        description: "EM currency collapse: massive capital outflows, currency pegs breaking",
+        volatility: 0.55,
+        drift: -0.035,
+        priceShock: -0.25,
+        forwardBasis: 0.025,
+        isEditable: true,
+        isHistorical: true
       },
-      contango: {
-        name: "Contango",
-        description: "Forward prices higher than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: 0.01,
-        isEditable: true
+      
+      brexit2016: {
+        name: "Brexit Vote (2016)",
+        description: "Political risk shock: sudden devaluation, risk-off sentiment",
+        volatility: 0.28,
+        drift: -0.012,
+        priceShock: -0.08,
+        forwardBasis: 0.005,
+        isEditable: true,
+        isHistorical: true
       },
-      backwardation: {
-        name: "Backwardation",
-        description: "Forward prices lower than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        forwardBasis: -0.01,
-        isEditable: true
+      
+      covid2020: {
+        name: "COVID-19 Pandemic (2020)",
+        description: "Global health crisis: extreme volatility, central bank intervention",
+        volatility: 0.32,
+        drift: -0.008,
+        priceShock: -0.10,
+        forwardBasis: 0.003,
+        isEditable: true,
+        isHistorical: true
       },
-      contangoReal: {
-        name: "Contango (Real Prices)",
-        description: "Real prices higher than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        realBasis: 0.01,
-        isEditable: true
+      
+      swissFrancShock: {
+        name: "Swiss Franc Shock (2015)",
+        description: "SNB abandon peg: sudden CHF appreciation, market disruption",
+        volatility: 0.40,
+        drift: 0.010,
+        priceShock: 0.18,
+        forwardBasis: -0.008,
+        isEditable: true,
+        isHistorical: true
       },
-      backwardationReal: {
-        name: "Backwardation (Real Prices)",
-        description: "Real prices lower than spot (monthly basis in %)",
-        volatility: 0.2,
-        drift: 0.01,
-        priceShock: 0,
-        realBasis: -0.01,
-        isEditable: true
+      
+      // ECB/Fed Stress Test Scenarios
+      adverseECB: {
+        name: "ECB Adverse Scenario",
+        description: "Based on ECB stress testing: eurozone recession, banking stress",
+        volatility: 0.25,
+        drift: -0.020,
+        priceShock: -0.09,
+        forwardBasis: 0.012,
+        isEditable: true,
+        isHistorical: false
       },
+      
+      fedSCAR: {
+        name: "Fed CCAR Adverse",
+        description: "Fed stress test: severe US recession, global spillover effects",
+        volatility: 0.30,
+        drift: -0.018,
+        priceShock: -0.11,
+        forwardBasis: 0.010,
+        isEditable: true,
+        isHistorical: false
+      },
+      
+      // Contemporary Risk Scenarios  
+      centralBankDivergence: {
+        name: "Central Bank Policy Divergence",
+        description: "Extreme monetary policy divergence causing capital flow reversals",
+        volatility: 0.22,
+        drift: -0.010,
+        priceShock: -0.06,
+        forwardBasis: 0.018,
+        isEditable: true,
+        isHistorical: false
+      },
+      
+      emergingMarketCrisis: {
+        name: "Emerging Market Crisis",
+        description: "Major EM economy crisis with contagion to developed markets",
+        volatility: 0.38,
+        drift: -0.022,
+        priceShock: -0.14,
+        forwardBasis: 0.020,
+        isEditable: true,
+        isHistorical: false
+      },
+      
+      tradeWar: {
+        name: "Trade War Escalation",
+        description: "Severe trade tensions leading to currency manipulation concerns",
+        volatility: 0.26,
+        drift: -0.013,
+        priceShock: -0.07,
+        forwardBasis: 0.008,
+        isEditable: true,
+        isHistorical: false
+      },
+      
+      inflationShock: {
+        name: "Inflation Shock",
+        description: "Unexpected inflation surge forcing aggressive central bank action",
+        volatility: 0.24,
+        drift: 0.008,
+        priceShock: 0.05,
+        forwardBasis: 0.015,
+        isEditable: true,
+        isHistorical: false
+      },
+      
+      // Tail Risk Scenarios
+      reserveCurrencyCrisis: {
+        name: "Reserve Currency Crisis",
+        description: "Loss of confidence in major reserve currency (USD/EUR)",
+        volatility: 0.60,
+        drift: -0.040,
+        priceShock: -0.30,
+        forwardBasis: 0.035,
+        isEditable: true,
+        isHistorical: false
+      },
+      
       custom: {
-        name: "Custom Case",
-        description: "User-defined scenario",
-        volatility: 0.2,
-        drift: 0.01,
+        name: "Custom Scenario",
+        description: "User-defined stress scenario",
+        volatility: 0.15,
+        drift: 0.005,
         priceShock: 0,
         forwardBasis: 0,
-        isCustom: true
+        isCustom: true,
+        isEditable: true,
+        isHistorical: false
       }
     };
+    
+    // Always return default scenarios to ensure we have all the new ones
+    if (savedState) {
+      const parsed = JSON.parse(savedState);
+      // Check if we have all the new scenarios, if not, use defaults
+      const savedScenarios = parsed.stressTestScenarios || {};
+      const expectedScenarios = ['base', 'gfc2008', 'blackWednesday', 'asianCrisis', 'brexit2016', 'covid2020', 'swissFrancShock', 'adverseECB', 'fedSCAR', 'centralBankDivergence', 'emergingMarketCrisis', 'tradeWar', 'inflationShock', 'reserveCurrencyCrisis', 'custom'];
+      
+      const hasAllScenarios = expectedScenarios.every(key => savedScenarios[key]);
+      
+      if (hasAllScenarios) {
+        return savedScenarios;
+      }
+    }
+    
+    return defaultScenarios;
   });
 
   // Add this new state
   const [activeStressTest, setActiveStressTest] = useState<string | null>(null);
+  
+  // Function to get stress test summary stats
+  const getStressTestSummary = () => {
+    if (!activeStressTest || !stressTestScenarios[activeStressTest]) return null;
+    
+    const scenario = stressTestScenarios[activeStressTest];
+    return {
+      name: scenario.name,
+      type: scenario.isHistorical ? 'Historical' : 
+            ['adverseECB', 'fedSCAR'].includes(activeStressTest) ? 'Regulatory' : 
+            activeStressTest === 'reserveCurrencyCrisis' ? 'Tail Risk' : 'Contemporary',
+      riskLevel: Math.abs(scenario.priceShock) > 0.15 ? 'High' : 
+                 Math.abs(scenario.priceShock) > 0.05 ? 'Medium' : 'Low',
+      severity: {
+        volatility: scenario.volatility,
+        shock: scenario.priceShock,
+        drift: scenario.drift
+      }
+    };
+  };
 
   // Add state for showing inputs
   const [showInputs, setShowInputs] = useState<Record<string, boolean>>({});
@@ -493,12 +630,61 @@ const Index = () => {
   const [showHistoricalData, setShowHistoricalData] = useState(true);
   const [showMonthlyStats, setShowMonthlyStats] = useState(true);
 
-  const [priceRanges, setPriceRanges] = useState<PriceRange[]>([
-    { min: 30, max: 60, probability: 43 },
-    { min: 60, max: 80, probability: 27 },
-    { min: 80, max: 120, probability: 22 },
-    { min: 120, max: 200, probability: 5 }
-  ]);
+  // Function to generate FX-appropriate price ranges based on current currency pair
+  const generateFXPriceRanges = (currencyPair: CurrencyPair, spotPrice: number): PriceRange[] => {
+    // Determine volatility tier based on currency pair
+    let volatilityTier: 'low' | 'medium' | 'high' = 'medium';
+    
+    if (['EUR/USD', 'USD/JPY', 'GBP/USD', 'USD/CHF'].includes(currencyPair.symbol)) {
+      volatilityTier = 'low'; // Major pairs - lower volatility
+    } else if (['EUR/GBP', 'EUR/JPY', 'GBP/JPY', 'EUR/CHF', 'GBP/CHF', 'CHF/JPY'].includes(currencyPair.symbol)) {
+      volatilityTier = 'medium'; // Cross pairs - medium volatility
+    } else {
+      volatilityTier = 'high'; // Exotic pairs - higher volatility
+    }
+    
+    // Define movement ranges based on volatility tier
+    const movements = {
+      low: [-0.08, -0.04, 0.04, 0.08], // ±4-8% for majors
+      medium: [-0.12, -0.06, 0.06, 0.12], // ±6-12% for crosses
+      high: [-0.20, -0.10, 0.10, 0.20] // ±10-20% for exotics
+    };
+    
+    const rangeMoves = movements[volatilityTier];
+    
+    // Generate price levels around current spot
+    const prices = rangeMoves.map(move => spotPrice * (1 + move));
+    prices.sort((a, b) => a - b);
+    
+    // Create ranges with appropriate probabilities (normal distribution-like)
+    return [
+      { 
+        min: parseFloat(prices[0].toFixed(4)), 
+        max: parseFloat(prices[1].toFixed(4)), 
+        probability: 20 // Tail risk
+      },
+      { 
+        min: parseFloat(prices[1].toFixed(4)), 
+        max: parseFloat(spotPrice.toFixed(4)), 
+        probability: 30 // Below current
+      },
+      { 
+        min: parseFloat(spotPrice.toFixed(4)), 
+        max: parseFloat(prices[2].toFixed(4)), 
+        probability: 30 // Above current
+      },
+      { 
+        min: parseFloat(prices[2].toFixed(4)), 
+        max: parseFloat(prices[3].toFixed(4)), 
+        probability: 20 // Tail risk
+      }
+    ];
+  };
+
+  const [priceRanges, setPriceRanges] = useState<PriceRange[]>(() => {
+    // Initialize with FX-appropriate ranges
+    return generateFXPriceRanges(params.currencyPair, params.spotPrice);
+  });
 
   const [matrixStrategies, setMatrixStrategies] = useState<{
     components: StrategyComponent[];
@@ -1958,9 +2144,37 @@ const Index = () => {
   const handleSpotPriceChange = (newPrice: number) => {
     setParams(prev => ({
       ...prev,
-      spotPrice: newPrice
+      spotPrice: newPrice,
+      // Update quote volume when spot price changes
+      quoteVolume: prev.baseVolume * newPrice
     }));
     setInitialSpotPrice(newPrice); // Mettre à jour le prix spot initial uniquement lors des modifications manuelles
+  };
+
+  // Handle base volume change - update quote volume automatically
+  const handleBaseVolumeChange = (newBaseVolume: number) => {
+    setParams(prev => ({
+      ...prev,
+      baseVolume: newBaseVolume,
+      quoteVolume: newBaseVolume * prev.spotPrice,
+      totalVolume: newBaseVolume // Keep totalVolume in sync for backward compatibility
+    }));
+  };
+
+  // Handle quote volume change - update base volume automatically
+  const handleQuoteVolumeChange = (newQuoteVolume: number) => {
+    setParams(prev => ({
+      ...prev,
+      quoteVolume: newQuoteVolume,
+      baseVolume: newQuoteVolume / prev.spotPrice,
+      totalVolume: newQuoteVolume / prev.spotPrice // Keep totalVolume in sync for backward compatibility
+    }));
+  };
+
+  // Function to update price ranges when currency pair or spot price changes
+  const updatePriceRangesForFX = () => {
+    const newRanges = generateFXPriceRanges(params.currencyPair, params.spotPrice);
+    setPriceRanges(newRanges);
   };
 
   // Add this useEffect near your other useEffect hooks
@@ -1976,6 +2190,12 @@ const Index = () => {
       setRealPrices(initialRealPrices);
     }
   }, [realPriceParams.useSimulation]);
+
+  // Auto-update price ranges when currency pair or spot price changes
+  useEffect(() => {
+    const newRanges = generateFXPriceRanges(params.currencyPair, params.spotPrice);
+    setPriceRanges(newRanges);
+  }, [params.currencyPair.symbol, params.spotPrice]);
 
   const saveScenario = () => {
     if (!results || !payoffData) return;
@@ -2054,8 +2274,13 @@ const Index = () => {
       startDate: new Date().toISOString().split('T')[0],
       monthsToHedge: 12,
       interestRate: 2.0,
+      domesticRate: 1.0,
+      foreignRate: 0.5,
       totalVolume: 1000000,
-      spotPrice: 100,
+      baseVolume: 1000000,
+      quoteVolume: 1000000 * CURRENCY_PAIRS[0].defaultSpotRate,
+      spotPrice: CURRENCY_PAIRS[0].defaultSpotRate,
+      currencyPair: CURRENCY_PAIRS[0],
       useCustomPeriods: false,
       customPeriods: []
     });
@@ -2168,8 +2393,13 @@ const Index = () => {
         startDate: new Date().toISOString().split('T')[0],
         monthsToHedge: 12,
         interestRate: 2.0,
+        domesticRate: 1.0,
+        foreignRate: 0.5,
         totalVolume: 1000000,
-        spotPrice: 100,
+        baseVolume: 1000000,
+        quoteVolume: 1000000 * CURRENCY_PAIRS[0].defaultSpotRate,
+        spotPrice: CURRENCY_PAIRS[0].defaultSpotRate,
+        currencyPair: CURRENCY_PAIRS[0],
         useCustomPeriods: false,
         customPeriods: []
       },
@@ -2252,7 +2482,9 @@ const Index = () => {
             <p>Type: ${strategy[0]?.type || ''}</p>
             <p>Start Date: ${params.startDate}</p>
             <p>Spot Price: ${params.spotPrice}</p>
-            <p>Total Volume: ${params.totalVolume}</p>
+                            <p>Base Volume ({params.currencyPair?.base || 'BASE'}): {params.baseVolume.toLocaleString()}</p>
+                <p>Quote Volume ({params.currencyPair?.quote || 'QUOTE'}): {Math.round(params.quoteVolume).toLocaleString()}</p>
+                <p>Current Rate: {params.spotPrice.toFixed(4)}</p>
           </div>
           <div class="stress-parameters">
             <p>Volatility: ${(stressTestScenarios[activeStressTest || 'base']?.volatility * 100).toFixed(1)}%</p>
@@ -3235,8 +3467,9 @@ const Index = () => {
     doc.text(`Start Date: ${params.startDate}`, 15, 45);
     doc.text(`Months to Hedge: ${params.monthsToHedge}`, 15, 50);
     doc.text(`Domestic Rate: ${params.domesticRate}% | Foreign Rate: ${params.foreignRate}%`, 15, 55);
-    doc.text(`Total Volume: ${params.totalVolume}`, 15, 60);
-    doc.text(`Spot Price: ${params.spotPrice}`, 15, 65);
+                doc.text(`Base Volume (${params.currencyPair?.base || 'BASE'}): ${params.baseVolume.toLocaleString()}`, 15, 60);
+      doc.text(`Quote Volume (${params.currencyPair?.quote || 'QUOTE'}): ${Math.round(params.quoteVolume).toLocaleString()}`, 15, 70);
+      doc.text(`Current Spot Rate: ${params.spotPrice.toFixed(4)}`, 15, 80);
     
     // Stratégie
     doc.setFontSize(14);
@@ -3663,7 +3896,7 @@ const Index = () => {
     // Create a new custom period with default values
     const newPeriod: CustomPeriod = {
       maturityDate: startDate.toISOString().split('T')[0],
-      volume: Math.round(params.totalVolume / (params.customPeriods.length + 1))
+      volume: Math.round(params.baseVolume / (params.customPeriods.length + 1))
     };
     
     // Update the params with the new period
@@ -3711,7 +3944,7 @@ const Index = () => {
         customPeriods: [
           {
             maturityDate: startDate.toISOString().split('T')[0],
-            volume: params.totalVolume
+            volume: params.baseVolume
           }
         ]
       });
@@ -4334,10 +4567,13 @@ const Index = () => {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="compact-form-group">
                   <label className="compact-label">Currency Pair</label>
+                  <div className="relative">
                   <Select 
                     value={params.currencyPair?.symbol || 'EUR/USD'} 
                     onValueChange={(value) => {
-                      const selectedPair = CURRENCY_PAIRS.find(pair => pair.symbol === value);
+                        // Chercher dans les paires standard et personnalisées
+                        const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+                        const selectedPair = allPairs.find(pair => pair.symbol === value);
                       if (selectedPair) {
                         setParams({
                           ...params, 
@@ -4389,8 +4625,161 @@ const Index = () => {
                           </div>
                         </SelectItem>
                       ))}
+                        
+                        {customCurrencyPairs.length > 0 && (
+                          <>
+                            <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t">Custom Pairs</div>
+                            {customCurrencyPairs.map(pair => (
+                              <SelectItem key={pair.symbol} value={pair.symbol}>
+                                <div className="flex flex-col">
+                                  <div className="flex justify-between items-center w-full">
+                                    <span>{pair.symbol}</span>
+                                    <span className="text-xs text-muted-foreground font-mono">{pair.defaultSpotRate}</span>
+                                  </div>
+                                  <span className="text-xs text-muted-foreground">{pair.name}</span>
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </>
+                        )}
+                        
+                        <div className="p-2 border-t mt-2">
+                          <Dialog>
+                            <DialogTrigger asChild>
+                              <Button variant="outline" size="sm" className="w-full">
+                                <PlusCircle className="h-3 w-3 mr-1" /> Add Custom Currency Pair
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent>
+                              <DialogHeader>
+                                <DialogTitle>Add Custom Currency Pair</DialogTitle>
+                                <DialogDescription>
+                                  Enter the details of your custom currency pair.
+                                </DialogDescription>
+                              </DialogHeader>
+                              
+                              <form onSubmit={(e) => {
+                                e.preventDefault();
+                                const formData = new FormData(e.currentTarget);
+                                const symbol = formData.get('symbol') as string;
+                                const name = formData.get('name') as string;
+                                const base = formData.get('base') as string;
+                                const quote = formData.get('quote') as string;
+                                const defaultSpotRate = parseFloat(formData.get('defaultSpotRate') as string);
+                                
+                                // Validation
+                                if (!symbol || !name || !base || !quote || isNaN(defaultSpotRate)) {
+                                  toast({
+                                    title: "Validation Error",
+                                    description: "All fields are required and spot rate must be a valid number.",
+                                    variant: "destructive"
+                                  });
+                                  return;
+                                }
+                                
+                                // Check if pair already exists
+                                const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+                                if (allPairs.some(pair => pair.symbol === symbol)) {
+                                  toast({
+                                    title: "Pair Already Exists",
+                                    description: `Currency pair ${symbol} already exists.`,
+                                    variant: "destructive"
+                                  });
+                                  return;
+                                }
+                                
+                                const newPair: CurrencyPair = {
+                                  symbol,
+                                  name,
+                                  base,
+                                  quote,
+                                  category: 'others',
+                                  defaultSpotRate
+                                };
+                                
+                                addCustomCurrencyPair(newPair);
+                                
+                                toast({
+                                  title: "Success",
+                                  description: `Currency pair ${symbol} added successfully.`,
+                                  variant: "default"
+                                });
+                                
+                                // Reset form and close dialog
+                                e.currentTarget.reset();
+                                (document.querySelector('[data-state="open"]') as HTMLElement)?.click();
+                                
+                                // Optionally select the new pair
+                                setParams({
+                                  ...params,
+                                  currencyPair: newPair,
+                                  spotPrice: newPair.defaultSpotRate
+                                });
+                                setInitialSpotPrice(newPair.defaultSpotRate);
+                              }}>
+                                <div className="grid gap-4 py-4">
+                                  <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="symbol" className="text-right">Symbol</Label>
+                                    <Input id="symbol" name="symbol" placeholder="EUR/USD" className="col-span-3" />
+                                  </div>
+                                  <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="name" className="text-right">Name</Label>
+                                    <Input id="name" name="name" placeholder="Euro/US Dollar" className="col-span-3" />
+                                  </div>
+                                  <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="base" className="text-right">Base Currency</Label>
+                                    <Input id="base" name="base" placeholder="EUR" className="col-span-3" />
+                                  </div>
+                                  <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="quote" className="text-right">Quote Currency</Label>
+                                    <Input id="quote" name="quote" placeholder="USD" className="col-span-3" />
+                                  </div>
+                                  <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="defaultSpotRate" className="text-right">Default Spot Rate</Label>
+                                    <Input id="defaultSpotRate" name="defaultSpotRate" placeholder="1.0850" type="number" step="0.0001" className="col-span-3" />
+                                  </div>
+                                </div>
+                                <DialogFooter>
+                                  <Button type="submit">Add Currency Pair</Button>
+                                </DialogFooter>
+                              </form>
+                            </DialogContent>
+                          </Dialog>
+                        </div>
                     </SelectContent>
                   </Select>
+                    
+                    {customCurrencyPairs.length > 0 && params.currencyPair && customCurrencyPairs.some(pair => pair.symbol === params.currencyPair?.symbol) && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="absolute right-8 top-1/2 transform -translate-y-1/2 h-6 w-6"
+                        onClick={() => {
+                          const filtered = customCurrencyPairs.filter(pair => pair.symbol !== params.currencyPair?.symbol);
+                          saveCustomCurrencyPairs(filtered);
+                          
+                          // Sélectionner EUR/USD par défaut si la paire supprimée était sélectionnée
+                          if (filtered.length === 0 || !filtered.some(pair => pair.symbol === params.currencyPair?.symbol)) {
+                            setParams({
+                              ...params,
+                              currencyPair: CURRENCY_PAIRS[0],
+                              spotPrice: CURRENCY_PAIRS[0].defaultSpotRate
+                            });
+                            setInitialSpotPrice(CURRENCY_PAIRS[0].defaultSpotRate);
+                          }
+                          
+                          toast({
+                            title: "Currency Pair Removed",
+                            description: `Currency pair ${params.currencyPair?.symbol} has been removed.`,
+                            variant: "default"
+                          });
+                        }}
+                        title="Remove custom currency pair"
+                      >
+                        <Trash className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 <div className="compact-form-group">
                   <label className="compact-label">Start Date</label>
@@ -4458,14 +4847,35 @@ const Index = () => {
                     />
                   </div>
                 </div>
+                <div className="space-y-3">
                 <div className="compact-form-group">
-                  <label className="compact-label">Total Volume</label>
+                    <label className="compact-label">
+                      {params.currencyPair?.base || 'Base'} Volume ({params.currencyPair?.base || 'BASE'})
+                    </label>
                   <Input
                     type="number"
-                    value={params.totalVolume}
-                    onChange={(e) => setParams({...params, totalVolume: Number(e.target.value)})}
+                      value={params.baseVolume}
+                      onChange={(e) => handleBaseVolumeChange(Number(e.target.value))}
                     className="compact-input"
-                  />
+                      placeholder="Volume in base currency"
+                    />
+                  </div>
+                  <div className="compact-form-group">
+                    <label className="compact-label">
+                      {params.currencyPair?.quote || 'Quote'} Volume ({params.currencyPair?.quote || 'QUOTE'})
+                    </label>
+                    <Input
+                      type="number"
+                      value={Math.round(params.quoteVolume)}
+                      onChange={(e) => handleQuoteVolumeChange(Number(e.target.value))}
+                      className="compact-input"
+                      placeholder="Volume in quote currency"
+                    />
+                  </div>
+                  <div className="text-xs text-muted-foreground flex items-center gap-1">
+                    <span>💱</span>
+                    <span>Volumes auto-sync at current spot rate: {params.spotPrice.toFixed(4)}</span>
+                  </div>
                 </div>
                 <div className="compact-form-group">
                   <label className="compact-label">
@@ -4558,7 +4968,7 @@ const Index = () => {
                                 onClick={() => removeCustomPeriod(index)}
                                 className="text-destructive hover:text-destructive hover:bg-destructive/10 h-8 w-8"
                               >
-                                <X size={14} />
+                                <Trash size={14} />
                               </Button>
                             </div>
                           </div>
@@ -4568,11 +4978,11 @@ const Index = () => {
                           Total Volume: {params.customPeriods.reduce((sum, p) => sum + p.volume, 0).toLocaleString()}
                         </div>
                         
-                        {Math.abs(params.customPeriods.reduce((sum, p) => sum + p.volume, 0) - params.totalVolume) > 0.01 && (
+                        {Math.abs(params.customPeriods.reduce((sum, p) => sum + p.volume, 0) - params.baseVolume) > 0.01 && (
                           <div className="mt-2 text-xs text-amber-600 flex items-center gap-1">
                             <AlertTriangle size={12} />
                             <span>The sum of custom periods volumes ({params.customPeriods.reduce((sum, p) => sum + p.volume, 0).toLocaleString()}) 
-                            differs from the total volume ({params.totalVolume.toLocaleString()}).</span>
+                            differs from the base volume ({params.baseVolume.toLocaleString()}).</span>
                           </div>
                         )}
                       </div>
@@ -4973,20 +5383,119 @@ const Index = () => {
 
           <Card className="mt-4">
             <CardHeader>
-              <CardTitle>Stress Test Scenarios</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle>FX Stress Test Scenarios</CardTitle>
+                <div className="flex items-center gap-4">
+                  <div className="text-sm text-muted-foreground">
+                    Based on historical events & regulatory stress tests
+                  </div>
+                  <button
+                    onClick={() => {
+                      // Clear localStorage and reload scenarios
+                      localStorage.removeItem('calculatorState');
+                      window.location.reload();
+                    }}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+                    title="Reset and load all stress test scenarios"
+                  >
+                    🔄 Reset Scenarios
+                  </button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
+              {/* Scenarios count indicator */}
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium text-blue-800">
+                    📊 {Object.keys(stressTestScenarios).length} scenarios available
+                  </span>
+                  <span className="text-blue-600">
+                    {Object.values(stressTestScenarios).filter(s => s.isHistorical).length} Historical | 
+                    {Object.values(stressTestScenarios).filter(s => ['adverseECB', 'fedSCAR'].includes(Object.keys(stressTestScenarios).find(k => stressTestScenarios[k] === s) || '')).length} Regulatory | 
+                    {Object.values(stressTestScenarios).filter(s => s.isCustom).length} Custom
+                  </span>
+                </div>
+              </div>
+              
+              <div className="space-y-6">
+                {/* Group scenarios by category */}
+                {[
+                  { 
+                    title: "Base Scenario", 
+                    scenarios: Object.entries(stressTestScenarios).filter(([key]) => key === 'base'),
+                    color: "bg-gray-50 border-gray-200",
+                    icon: "⚪"
+                  },
+                  { 
+                    title: "Historical Crisis Events", 
+                    scenarios: Object.entries(stressTestScenarios).filter(([_, scenario]) => scenario.isHistorical),
+                    color: "bg-red-50 border-red-200",
+                    icon: "📊"
+                  },
+                  { 
+                    title: "Regulatory Stress Tests", 
+                    scenarios: Object.entries(stressTestScenarios).filter(([key]) => 
+                      ['adverseECB', 'fedSCAR'].includes(key)
+                    ),
+                    color: "bg-blue-50 border-blue-200",
+                    icon: "🏛️"
+                  },
+                  { 
+                    title: "Contemporary Risk Scenarios", 
+                    scenarios: Object.entries(stressTestScenarios).filter(([key]) => 
+                      ['centralBankDivergence', 'emergingMarketCrisis', 'tradeWar', 'inflationShock'].includes(key)
+                    ),
+                    color: "bg-yellow-50 border-yellow-200",
+                    icon: "⚡"
+                  },
+                  { 
+                    title: "Tail Risk Scenarios", 
+                    scenarios: Object.entries(stressTestScenarios).filter(([key]) => 
+                      key === 'reserveCurrencyCrisis'
+                    ),
+                    color: "bg-purple-50 border-purple-200",
+                    icon: "⚠️"
+                  },
+                  { 
+                    title: "Custom Scenarios", 
+                    scenarios: Object.entries(stressTestScenarios).filter(([_, scenario]) => scenario.isCustom),
+                    color: "bg-green-50 border-green-200",
+                    icon: "⚙️"
+                  }
+                ].map(({ title, scenarios, color, icon }) => 
+                  scenarios.length > 0 && (
+                    <div key={title} className={`p-4 rounded-lg border ${color}`}>
+                      <h4 className="font-medium mb-3 text-sm uppercase tracking-wide flex items-center gap-2">
+                        <span>{icon}</span>
+                        {title}
+                      </h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {Object.entries(stressTestScenarios).map(([key, scenario]) => (
-                  <Card
-                    key={key}
-                    className="w-full text-left p-3 hover:bg-gray-50"
-                  >
+                        {scenarios.map(([key, scenario]) => (
+                          <Card key={key} className={`p-4 transition-all duration-200 ${activeStressTest === key ? 'ring-2 ring-blue-500 bg-blue-50' : 'bg-white hover:shadow-md'}`}>
+                            <div className="space-y-3">
+                              <div className="flex items-start justify-between">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h5 className="font-medium text-sm">{scenario.name}</h5>
+                                    {scenario.isHistorical && (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                        Historical
+                                      </span>
+                                    )}
+                                    {['adverseECB', 'fedSCAR'].includes(key) && (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                        Regulatory
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-gray-600 leading-relaxed">{scenario.description}</p>
+                                </div>
                     <button
                       onClick={() => toggleInputs(key)}
-                      className="w-full text-left p-3 hover:bg-gray-50"
+                                  className="ml-2 p-1 rounded-full hover:bg-gray-100 transition-colors"
+                                  title="Toggle details"
                     >
-                      <span className="font-medium">{scenario.name}</span>
                       <svg
                         className={`w-4 h-4 transform transition-transform ${showInputs[key] ? 'rotate-180' : ''}`}
                         fill="none"
@@ -4996,78 +5505,127 @@ const Index = () => {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                       </svg>
                     </button>
+                              </div>
+                              
+                              {/* Quick metrics preview */}
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div className="p-2 bg-gray-50 rounded text-center">
+                                  <div className="font-medium text-gray-700">Vol</div>
+                                  <div className="font-semibold">{(scenario.volatility * 100).toFixed(1)}%</div>
+                                </div>
+                                <div className="p-2 bg-gray-50 rounded text-center">
+                                  <div className="font-medium text-gray-700">Shock</div>
+                                  <div className={`font-semibold ${scenario.priceShock >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {scenario.priceShock >= 0 ? '+' : ''}{(scenario.priceShock * 100).toFixed(1)}%
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Action button */}
+                              <Button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  applyStressTest(key);
+                                }}
+                                size="sm"
+                                className={`w-full ${
+                                  activeStressTest === key 
+                                    ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                                    : 'bg-gray-800 hover:bg-gray-900 text-white'
+                                }`}
+                              >
+                                {activeStressTest === key ? '✓ Active Scenario' : '🚀 Run Scenario'}
+                              </Button>
+
+                              {/* Detailed inputs */}
                     {showInputs[key] && (
-                      <div className="px-3 pb-3">
-                        <p className="text-xs text-gray-600 mb-2">{scenario.description}</p>
+                                <div className="mt-3 p-3 bg-gray-50 rounded-lg border-t">
+                                  <h6 className="font-medium mb-2 text-xs text-gray-700">⚙️ Customize Parameters</h6>
                         <div className="space-y-2">
                           <div>
-                            <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                                      <label className="block text-xs font-medium mb-1 text-gray-700">Volatility (%)</label>
                             <Input
-                              className="h-7"
+                                        className="h-7 text-xs"
                               type="number"
-                              value={scenario.volatility * 100}
+                                        value={(scenario.volatility * 100).toFixed(1)}
                               onChange={(e) => updateScenario(key, 'volatility', Number(e.target.value) / 100)}
                               step="0.1"
+                                        min="0"
+                                        max="100"
                             />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium mb-1">Drift (%)</label>
+                                      <label className="block text-xs font-medium mb-1 text-gray-700">Drift (%)</label>
                             <Input
-                              className="h-7"
+                                        className="h-7 text-xs"
                               type="number"
-                              value={scenario.drift * 100}
+                                        value={(scenario.drift * 100).toFixed(1)}
                               onChange={(e) => updateScenario(key, 'drift', Number(e.target.value) / 100)}
                               step="0.1"
+                                        min="-10"
+                                        max="10"
                             />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium mb-1">Price Shock (%)</label>
+                                      <label className="block text-xs font-medium mb-1 text-gray-700">Price Shock (%)</label>
                             <Input
-                              className="h-7"
+                                        className="h-7 text-xs"
                               type="number"
-                              value={scenario.priceShock * 100}
+                                        value={(scenario.priceShock * 100).toFixed(1)}
                               onChange={(e) => updateScenario(key, 'priceShock', Number(e.target.value) / 100)}
                               step="0.1"
+                                        min="-50"
+                                        max="50"
                             />
                           </div>
                           {scenario.forwardBasis !== undefined && (
                             <div>
-                              <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
+                                        <label className="block text-xs font-medium mb-1 text-gray-700">Forward Basis (%)</label>
                               <Input
-                                className="h-7"
+                                          className="h-7 text-xs"
                                 type="number"
-                                value={scenario.forwardBasis * 100}
+                                          value={((scenario.forwardBasis || 0) * 100).toFixed(1)}
                                 onChange={(e) => updateScenario(key, 'forwardBasis', Number(e.target.value) / 100)}
                                 step="0.1"
+                                          min="-5"
+                                          max="5"
                               />
                             </div>
                           )}
                           {scenario.realBasis !== undefined && (
                             <div>
-                              <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
+                                        <label className="block text-xs font-medium mb-1 text-gray-700">Real Basis (%)</label>
                               <Input
-                                className="h-7"
+                                          className="h-7 text-xs"
                                 type="number"
-                                value={scenario.realBasis * 100}
+                                          value={((scenario.realBasis || 0) * 100).toFixed(1)}
                                 onChange={(e) => updateScenario(key, 'realBasis', Number(e.target.value) / 100)}
                                 step="0.1"
+                                          min="-5"
+                                          max="5"
                               />
                         </div>
                           )}
                         </div>
+                                  <div className="mt-3 flex gap-2">
                         <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            applyStressTest(key);
-                          }}
-                          className="w-full bg-[#0f172a] text-white hover:bg-[#1e293b] mt-4"
-                        >
-                          Run Scenario
+                                      onClick={() => resetScenario(key)}
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-xs"
+                                    >
+                                      🔄 Reset
                         </Button>
+                                  </div>
                       </div>
                     )}
+                            </div>
                   </Card>
                 ))}
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
             </CardContent>
           </Card>
@@ -5208,12 +5766,41 @@ const Index = () => {
         <TabsContent value="riskmatrix">
           <Card>
             <CardHeader>
-              <CardTitle>Risk Matrix Generator</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle>FX Risk Matrix Generator</CardTitle>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">
+                    {params.currencyPair?.symbol || 'Currency Pair'}
+                  </span>
+                  <button
+                    onClick={updatePriceRangesForFX}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+                    title="Update price ranges for current FX pair"
+                  >
+                    🔄 Update FX Ranges
+                  </button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="text-sm">
+                  <span className="font-medium text-blue-800">Current Setup:</span> 
+                  <span className="text-blue-700"> {params.currencyPair?.symbol} @ {params.spotPrice.toFixed(4)}</span>
+                  <span className="text-blue-600 ml-2">
+                    (Ranges auto-generated based on {params.currencyPair?.category} pair volatility)
+                  </span>
+                </div>
+              </div>
+              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <h3 className="text-lg font-semibold mb-4">Price Ranges</h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold">FX Rate Ranges</h3>
+                    <span className="text-sm text-muted-foreground">
+                      ({params.currencyPair?.quote || 'Quote Currency'} per {params.currencyPair?.base || 'Base Currency'})
+                    </span>
+                  </div>
                   <div className="space-y-4">
                     {priceRanges.map((range, index) => (
                       <div key={index} className="grid grid-cols-3 gap-4">
@@ -5352,9 +5939,9 @@ const Index = () => {
                       <tr>
                         <th className="border p-2">Strategy</th>
                         <th className="border p-2">Coverage Ratio</th>
-                        <th className="border p-2">Hedging Cost (k$)</th>
+                        <th className="border p-2">Hedging Cost ({params.currencyPair?.base || 'Base Currency'})</th>
                         {priceRanges.map((range, i) => (
-                          <th key={i} className="border p-2">{range.probability}%<br/>[{range.min},{range.max}]</th>
+                          <th key={i} className="border p-2">{range.probability}%<br/>[{range.min.toFixed(4)}-{range.max.toFixed(4)}]</th>
                         ))}
                       </tr>
                     </thead>
@@ -5368,7 +5955,7 @@ const Index = () => {
                               <tr key={`${i}-${ratio}`}>
                                 <td className="border p-2">{strategyName}</td>
                                 <td className="border p-2">{ratio}%</td>
-                                <td className="border p-2">{((result.hedgingCost / result.coverageRatio) * ratio / 1000).toFixed(1)}</td>
+                                <td className="border p-2">{((result.hedgingCost / result.coverageRatio) * ratio).toFixed(2)}</td>
                                 
                                 {priceRanges.map((range, j) => {
                                   const rangeKey = `${range.min},${range.max}`;
@@ -5381,7 +5968,7 @@ const Index = () => {
                                       className="border p-2"
                                       style={{ backgroundColor: getCellColor(adjustedValue) }}
                                     >
-                                      {(adjustedValue / 1000).toFixed(1)}
+                                      {adjustedValue.toFixed(2)}
                           </td>
                                   );
                                 })}
@@ -5392,7 +5979,7 @@ const Index = () => {
                             <tr key={i}>
                               <td className="border p-2">{result.name}</td>
                           <td className="border p-2">{result.coverageRatio}%</td>
-                              <td className="border p-2">{(result.hedgingCost / 1000).toFixed(1)}</td>
+                              <td className="border p-2">{result.hedgingCost.toFixed(2)}</td>
                               
                           {priceRanges.map((range, j) => {
                             const rangeKey = `${range.min},${range.max}`;
@@ -5402,7 +5989,7 @@ const Index = () => {
                                 className="border p-2"
                                 style={{ backgroundColor: getCellColor(result.differences[rangeKey]) }}
                               >
-                                {(result.differences[rangeKey] / 1000).toFixed(1)}
+                                {result.differences[rangeKey].toFixed(2)}
                               </td>
                             );
                           })}

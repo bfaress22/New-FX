@@ -101,10 +101,22 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         ['Parameter', 'Value'],
         ['Start Date', scenario.params.startDate],
         ['Months to Hedge', scenario.params.monthsToHedge.toString()],
-        ['Interest Rate', `${scenario.params.interestRate}%`],
-        ['Total Volume', scenario.params.totalVolume.toString()],
-        ['Spot Price', scenario.params.spotPrice.toFixed(2)]
+        ['Interest Rate', `${scenario.params.interestRate}%`]
       ];
+
+      // Add volume information based on what's available
+      if (scenario.params.baseVolume && scenario.params.quoteVolume) {
+        basicParams.push(
+          [`Base Volume (${scenario.params.currencyPair?.base || 'BASE'})`, scenario.params.baseVolume.toLocaleString()],
+          [`Quote Volume (${scenario.params.currencyPair?.quote || 'QUOTE'})`, Math.round(scenario.params.quoteVolume).toLocaleString()],
+          ['Rate', scenario.params.spotPrice?.toFixed(4) || 'N/A']
+        );
+      } else {
+        basicParams.push(
+          ['Total Volume', scenario.params.totalVolume?.toLocaleString() || 'N/A'],
+          ['Spot Price', scenario.params.spotPrice?.toFixed(2) || 'N/A']
+        );
+      }
 
       (pdf as any).autoTable({
         ...tableOptions,

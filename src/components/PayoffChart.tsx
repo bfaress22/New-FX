@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   LineChart,
   Line,
@@ -24,7 +24,162 @@ interface PayoffChartProps {
   className?: string;
 }
 
-// Custom tooltip component for better styling
+// Generate FX hedging payoff data based on strategy
+const generateFXHedgingData = (strategy: any[], spot: number, includePremium: boolean = false) => {
+  const data = [];
+  const minSpot = spot * 0.7;  // -30% du spot
+  const maxSpot = spot * 1.3;  // +30% du spot
+  const step = (maxSpot - minSpot) / 100; // 100 points
+
+  for (let currentSpot = minSpot; currentSpot <= maxSpot; currentSpot += step) {
+    const unhedgedRate = currentSpot;
+    let hedgedRate = currentSpot;
+    let totalPremium = 0;
+
+    // Process each option in the strategy
+    strategy.forEach(option => {
+      const strike = option.strikeType === 'percent' 
+        ? spot * (option.strike / 100) 
+        : option.strike;
+      
+      // Utilise la quantité avec son signe (+ pour achat, - pour vente)
+      const quantity = option.quantity / 100;
+      
+      // Calculate option premium (simplified)
+      const premium = 0.01 * Math.abs(quantity); // Prime simplifiée, toujours positive
+      
+      if (option.type === 'put') {
+        // PUT: La logique change selon achat ou vente - INVERSION COMPLÈTE
+        if (currentSpot < strike) {
+          // Dans la monnaie
+          if (quantity > 0) {
+            // ACHAT PUT: Protection contre la baisse
+            // Formule inversée
+            hedgedRate = currentSpot - ((strike - currentSpot) * Math.abs(quantity));
+          } else if (quantity < 0) {
+            // VENTE PUT: Obligation d'achat à un prix élevé
+            // Formule inversée
+            hedgedRate = currentSpot + ((strike - currentSpot) * Math.abs(quantity));
+          }
+        }
+        // Hors de la monnaie: pas d'effet sur le taux (sauf prime)
+      } 
+      else if (option.type === 'call') {
+        // CALL: La logique change selon achat ou vente
+        if (currentSpot > strike) {
+          // Dans la monnaie
+          if (quantity > 0) {
+            // ACHAT CALL: Protection contre la hausse
+            hedgedRate = currentSpot - ((currentSpot - strike) * Math.abs(quantity));
+          } else if (quantity < 0) {
+            // VENTE CALL: Obligation de vente à un prix bas
+            hedgedRate = currentSpot + ((currentSpot - strike) * Math.abs(quantity));
+          }
+        }
+        // Hors de la monnaie: pas d'effet sur le taux (sauf prime)
+      }
+      else if (option.type === 'forward') {
+        // FORWARD: Taux fixe peu importe le spot
+        hedgedRate = strike * Math.abs(quantity) + currentSpot * (1 - Math.abs(quantity));
+      }
+      else if (option.type === 'swap') {
+        // SWAP: Échange à taux fixe
+        hedgedRate = strike;
+      }
+      
+      // Barrier options (simplified logic)
+      else if (option.type.includes('knockout') || option.type.includes('knockin')) {
+        const barrier = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        
+        let isBarrierBroken = false;
+        
+        if (option.type.includes('knockout')) {
+          if (option.type.includes('call')) {
+            isBarrierBroken = currentSpot >= barrier;
+          } else if (option.type.includes('put')) {
+            isBarrierBroken = currentSpot <= barrier;
+          }
+        } else if (option.type.includes('knockin')) {
+          if (option.type.includes('call')) {
+            isBarrierBroken = currentSpot >= barrier;
+          } else if (option.type.includes('put')) {
+            isBarrierBroken = currentSpot <= barrier;
+          }
+        }
+        
+        if (option.type.includes('knockout')) {
+          // Option knocked out = pas de protection
+          if (!isBarrierBroken) {
+            if (option.type.includes('call') && currentSpot > strike) {
+              // Même logique que CALL standard avec quantité signée
+              if (quantity > 0) {
+                hedgedRate = currentSpot - ((currentSpot - strike) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                hedgedRate = currentSpot + ((currentSpot - strike) * Math.abs(quantity));
+              }
+            } else if (option.type.includes('put') && currentSpot < strike) {
+              // Même logique inversée que PUT standard avec quantité signée
+              if (quantity > 0) {
+                // INVERSION pour PUT avec barrière - knockout
+                hedgedRate = currentSpot - ((strike - currentSpot) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                // INVERSION pour PUT avec barrière - knockout
+                hedgedRate = currentSpot + ((strike - currentSpot) * Math.abs(quantity));
+              }
+            }
+          }
+        } else { // knockin
+          // Option knocked in = protection active
+          if (isBarrierBroken) {
+            if (option.type.includes('call') && currentSpot > strike) {
+              // Même logique que CALL standard avec quantité signée
+              if (quantity > 0) {
+                hedgedRate = currentSpot - ((currentSpot - strike) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                hedgedRate = currentSpot + ((currentSpot - strike) * Math.abs(quantity));
+              }
+            } else if (option.type.includes('put') && currentSpot < strike) {
+              // Même logique inversée que PUT standard avec quantité signée
+              if (quantity > 0) {
+                // INVERSION pour PUT avec barrière - knockin
+                hedgedRate = currentSpot - ((strike - currentSpot) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                // INVERSION pour PUT avec barrière - knockin
+                hedgedRate = currentSpot + ((strike - currentSpot) * Math.abs(quantity));
+              }
+            }
+          }
+        }
+      }
+      
+      // Ajuster pour la prime avec le signe correct selon achat/vente
+      if (quantity > 0) {
+        // Pour les achats d'options, on paie la prime (coût négatif)
+        totalPremium += premium;
+      } else if (quantity < 0) {
+        // Pour les ventes d'options, on reçoit la prime (gain positif)
+        totalPremium -= premium;
+      }
+    });
+
+    // Ajuster pour la prime si incluse
+    if (includePremium && strategy.length > 0) {
+      hedgedRate -= totalPremium;
+    }
+
+    data.push({
+      spot: parseFloat(currentSpot.toFixed(4)),
+      unhedgedRate: parseFloat(unhedgedRate.toFixed(4)),
+      hedgedRate: parseFloat(hedgedRate.toFixed(4))
+    });
+  }
+
+  return data;
+};
+
+// Custom tooltip component for FX hedging
 const CustomTooltip = ({ 
   active, 
   payload, 
@@ -33,6 +188,10 @@ const CustomTooltip = ({
 }: any) => {
   
   if (active && payload && payload.length) {
+    const hedgedValue = payload.find((p: any) => p.dataKey === 'hedgedRate')?.value;
+    const unhedgedValue = payload.find((p: any) => p.dataKey === 'unhedgedRate')?.value;
+    const protection = hedgedValue && unhedgedValue ? (hedgedValue - unhedgedValue) : 0;
+    
     return (
       <div className="p-3 rounded-lg shadow-lg bg-background border border-border">
         <p className="font-semibold">
@@ -44,7 +203,11 @@ const CustomTooltip = ({
           </p>
         ))}
         <hr className="my-2 border-border" />
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm font-medium">
+          Protection: {protection > 0 ? '+' : ''}{protection.toFixed(4)}
+          {protection > 0 ? ' ✅' : protection < 0 ? ' ❌' : ' ⚪'}
+        </p>
+        <p className="text-xs text-muted-foreground">
           <span className="font-medium">Base:</span> {currencyPair?.base || 'BASE'}
           {' | '}
           <span className="font-medium">Quote:</span> {currencyPair?.quote || 'QUOTE'}
@@ -67,14 +230,22 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
   const [showPremium, setShowPremium] = useState(includePremium);
   const [showRiskMetrics, setShowRiskMetrics] = useState(true);
   
+  // Generate FX hedging data instead of using the passed data
+  const chartData = useMemo(() => {
+    return generateFXHedgingData(strategy, spot, showPremium);
+  }, [strategy, spot, showPremium]);
+  
   // Get strategy type for display
   const getStrategyName = () => {
-    if (strategy.length === 0) return "No Strategy";
+    if (strategy.length === 0) return "No Hedging Strategy";
     if (strategy.length === 1) {
       const option = strategy[0];
-      return `${option.type.toUpperCase()} ${option.strikeType === 'percent' ? option.strike + '%' : option.strike}`;
+      const strikeDisplay = option.strikeType === 'percent' 
+        ? `${option.strike}%` 
+        : option.strike.toFixed(4);
+      return `${option.type.toUpperCase()} ${strikeDisplay}`;
     }
-    return "Custom Strategy";
+    return "Multi-Leg Hedging Strategy";
   };
 
   // Configure reference lines based on strategy
@@ -93,20 +264,6 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
           fill: "#6B7280",
           fontSize: 12,
         }}
-      />,
-      // Break-even line (Y=0)
-      <ReferenceLine
-        key="breakeven"
-        y={0}
-        stroke="#374151"
-        strokeWidth={1}
-        strokeDasharray="2 2"
-        label={{
-          value: "Break-even",
-          position: "insideTopRight",
-          fill: "#374151",
-          fontSize: 10,
-        }}
       />
     ];
 
@@ -122,7 +279,7 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
           key={`strike-${index}`}
           x={strike}
           stroke="#059669"
-          strokeWidth={1}
+          strokeWidth={2}
           strokeDasharray="5 5"
           label={{
             value: `${option.type.toUpperCase()} Strike`,
@@ -157,55 +314,55 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
             }}
           />
         );
-
-        // Second barrier for double barrier options
-        if (option.secondBarrier && option.type.includes('double')) {
-          const secondBarrier = option.barrierType === 'percent' 
-            ? spot * (option.secondBarrier / 100) 
-            : option.secondBarrier;
-
-          lines.push(
-            <ReferenceLine
-              key={`second-barrier-${index}`}
-              x={secondBarrier}
-              stroke={barrierColor}
-              strokeWidth={2}
-              strokeDasharray="4 4"
-              label={{
-                value: `${isKnockout ? 'KO' : 'KI'} Barrier 2`,
-                position: "bottom",
-                fill: barrierColor,
-                fontSize: 11,
-              }}
-            />
-          );
-        }
       }
     });
 
     return lines;
   };
 
-  const chartData = data?.length > 0 ? data : [];
   const strategyName = getStrategyName();
 
-  // Calculate some statistics for display
-  const maxPayoff = chartData.length > 0 ? Math.max(...chartData.map(d => d.payoff)) : 0;
-  const minPayoff = chartData.length > 0 ? Math.min(...chartData.map(d => d.payoff)) : 0;
-  const breakEvenPoints = chartData.filter(d => Math.abs(d.payoff) < 0.01);
-  
-  // Calculate risk metrics
-  const profitZone = chartData.filter(d => d.payoff > 0);
-  const lossZone = chartData.filter(d => d.payoff < 0);
-  const maxRisk = Math.abs(minPayoff);
-  const maxReward = maxPayoff;
-  const riskRewardRatio = maxReward > 0 ? maxRisk / maxReward : 0;
+  // Calculate hedging effectiveness metrics
+  const hedgingMetrics = useMemo(() => {
+    if (chartData.length === 0) return null;
+    
+    const protectedPoints = chartData.filter(d => 
+      Math.abs(d.hedgedRate - d.unhedgedRate) > 0.0001
+    );
+    
+    const maxProtection = Math.max(...chartData.map(d => d.hedgedRate - d.unhedgedRate));
+    const minProtection = Math.min(...chartData.map(d => d.hedgedRate - d.unhedgedRate));
+    
+    const protectionEffectiveness = protectedPoints.length / chartData.length * 100;
+    
+    return {
+      protectionEffectiveness,
+      maxProtection,
+      minProtection,
+      protectedPoints: protectedPoints.length
+    };
+  }, [chartData]);
+
+  if (strategy.length === 0) {
+    return (
+      <Card className={className}>
+        <CardHeader>
+          <CardTitle>FX Hedging Profile</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-center text-muted-foreground py-8">
+            Add hedging instruments to view the protection profile
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className={className}>
       <CardHeader>
         <CardTitle className="flex items-center justify-between">
-          <span>FX Options Payoff Profile</span>
+          <span>FX Hedging Profile</span>
           <div className="flex items-center gap-4">
             <div className="flex items-center space-x-2">
               <Switch 
@@ -213,7 +370,7 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
                 checked={showPremium} 
                 onCheckedChange={setShowPremium}
               />
-              <Label htmlFor="show-premium" className="text-sm">Include Premium</Label>
+              <Label htmlFor="show-premium" className="text-sm">Include Premium Cost</Label>
             </div>
             <span className="text-sm font-normal text-muted-foreground">
               {strategyName}
@@ -221,29 +378,29 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
           </div>
         </CardTitle>
         <div className="text-sm text-muted-foreground space-y-2">
-          <p>Strategy payoff across different {currencyPair?.symbol || 'FX'} rates at maturity</p>
+          <p>Compare hedged vs unhedged {currencyPair?.symbol || 'FX'} rates across different market scenarios</p>
           
           {/* Quick metrics row */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-            <div className="text-center p-2 bg-green-50 rounded border">
-              <div className="font-medium text-green-700">Max Profit</div>
-              <div className="text-green-600 font-semibold">{maxPayoff.toFixed(4)}</div>
-            </div>
-            <div className="text-center p-2 bg-red-50 rounded border">
-              <div className="font-medium text-red-700">Max Loss</div>
-              <div className="text-red-600 font-semibold">{minPayoff.toFixed(4)}</div>
-            </div>
-            {breakEvenPoints.length > 0 && (
-              <div className="text-center p-2 bg-blue-50 rounded border">
-                <div className="font-medium text-blue-700">Break-even</div>
-                <div className="text-blue-600 font-semibold">{breakEvenPoints[0].price.toFixed(4)}</div>
+          {hedgingMetrics && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+              <div className="text-center p-2 bg-green-50 rounded border">
+                <div className="font-medium text-green-700">Max Protection</div>
+                <div className="text-green-600 font-semibold">{hedgingMetrics.maxProtection.toFixed(4)}</div>
               </div>
-            )}
-            <div className="text-center p-2 bg-gray-50 rounded border">
-              <div className="font-medium text-gray-700">Risk/Reward</div>
-              <div className="text-gray-600 font-semibold">{riskRewardRatio.toFixed(2)}</div>
+              <div className="text-center p-2 bg-red-50 rounded border">
+                <div className="font-medium text-red-700">Max Cost</div>
+                <div className="text-red-600 font-semibold">{Math.abs(hedgingMetrics.minProtection).toFixed(4)}</div>
+              </div>
+              <div className="text-center p-2 bg-blue-50 rounded border">
+                <div className="font-medium text-blue-700">Protection Range</div>
+                <div className="text-blue-600 font-semibold">{hedgingMetrics.protectionEffectiveness.toFixed(1)}%</div>
+              </div>
+              <div className="text-center p-2 bg-gray-50 rounded border">
+                <div className="font-medium text-gray-700">Current Spot</div>
+                <div className="text-gray-600 font-semibold">{spot.toFixed(4)}</div>
+              </div>
             </div>
-          </div>
+          )}
           
           {/* Risk metrics toggle */}
           <div className="flex items-center space-x-2">
@@ -252,7 +409,7 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
               checked={showRiskMetrics} 
               onCheckedChange={setShowRiskMetrics}
             />
-            <Label htmlFor="show-metrics" className="text-xs">Show detailed risk analysis</Label>
+            <Label htmlFor="show-metrics" className="text-xs">Show detailed hedging analysis</Label>
           </div>
         </div>
       </CardHeader>
@@ -265,23 +422,19 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
             >
               <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
               <XAxis
-                dataKey="price"
+                dataKey="spot"
                 domain={["dataMin", "dataMax"]}
                 tickFormatter={(value) => value.toFixed(3)}
                 label={{
-                  value: `${currencyPair?.symbol || 'FX'} Rate at Maturity`,
+                  value: `${currencyPair?.symbol || 'FX'} Rate`,
                   position: "insideBottom",
                   offset: -10,
                 }}
               />
               <YAxis
                 tickFormatter={(value) => value.toFixed(3)}
-                domain={[
-                  (dataMin: number) => Math.min(dataMin, -Math.abs(dataMin) * 0.1), 
-                  (dataMax: number) => Math.max(dataMax, Math.abs(dataMax) * 0.1)
-                ]}
                 label={{
-                  value: `Payoff (${currencyPair?.quote || 'Quote Currency'})`,
+                  value: `Effective Rate (${currencyPair?.quote || 'Quote Currency'})`,
                   angle: -90,
                   position: "insideLeft",
                 }}
@@ -294,15 +447,26 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
                 height={36}
               />
               
-              {/* Main payoff line */}
+              {/* Unhedged rate line (reference) */}
               <Line
                 type="monotone"
-                dataKey="payoff"
-                stroke="#2563EB"
+                dataKey="unhedgedRate"
+                stroke="#9CA3AF"
+                strokeWidth={2}
+                strokeDasharray="4 4"
+                dot={false}
+                name="Unhedged Rate"
+              />
+              
+              {/* Hedged rate line */}
+              <Line
+                type="monotone"
+                dataKey="hedgedRate"
+                stroke="#3B82F6"
                 strokeWidth={3}
                 dot={false}
-                activeDot={{ r: 6, fill: "#2563EB" }}
-                name={`Strategy Payoff${showPremium ? ' (net of premium)' : ' (excluding premium)'}`}
+                activeDot={{ r: 6, fill: "#3B82F6" }}
+                name={`Hedged Rate${showPremium ? ' (net of premium)' : ' (excluding premium)'}`}
               />
               
               {/* Reference lines */}
@@ -314,67 +478,80 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
         {/* Strategy Summary */}
         <div className="mt-4 space-y-4">
           <div className="p-4 bg-muted/50 rounded-lg">
-            <h4 className="font-medium mb-2">Strategy Composition</h4>
+            <h4 className="font-medium mb-2">Hedging Strategy Details</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
               {strategy.map((option, index) => {
                 const strike = option.strikeType === 'percent' 
                   ? `${option.strike}% (${(spot * option.strike / 100).toFixed(4)})` 
                   : option.strike.toFixed(4);
                 
+                const hedgingLogic = option.type === 'put' 
+                  ? (option.quantity > 0 ? '📉 Protection against rate decline (Long Put)' : '📉 Exposure to rate decline (Short Put)')
+                  : option.type === 'call'
+                  ? (option.quantity > 0 ? '📈 Protection against rate increase (Long Call)' : '📈 Exposure to rate increase (Short Call)')
+                  : option.type === 'forward'
+                  ? '🔒 Fixed rate hedging'
+                  : '💱 Rate swap';
+                
                 return (
-                  <div key={index} className="flex justify-between">
-                    <span className="font-medium">{option.type.toUpperCase()}:</span>
-                    <span>Strike {strike}, Vol {option.volatility}%, Qty {option.quantity}%</span>
+                  <div key={index} className="flex flex-col space-y-1 p-2 bg-background rounded border">
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium">{option.type.toUpperCase()}</span>
+                      <span className="text-xs text-muted-foreground">{option.quantity}% coverage</span>
+                    </div>
+                    <div className="text-xs">Strike: {strike}</div>
+                    <div className="text-xs text-muted-foreground">{hedgingLogic}</div>
+                    {option.barrier && (
+                      <div className="text-xs text-orange-600">
+                        Barrier: {option.barrierType === 'percent' 
+                          ? `${option.barrier}% (${(spot * option.barrier / 100).toFixed(4)})` 
+                          : option.barrier.toFixed(4)}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
             
-            {/* Additional info for barrier options */}
-            {strategy.some(opt => opt.barrier) && (
-              <div className="mt-2 pt-2 border-t border-border">
-                <p className="text-xs text-muted-foreground">
-                  <strong>Note:</strong> Barrier options payoff is simplified for visualization. 
-                  Actual payoff depends on whether barriers are breached during the option's lifetime.
-                </p>
-              </div>
-            )}
+            <div className="mt-3 pt-3 border-t border-border">
+              <p className="text-xs text-muted-foreground">
+                <strong>Hedging Logic:</strong> This chart shows how your hedging strategy affects the effective FX rate 
+                compared to remaining unhedged across different market scenarios.
+              </p>
+            </div>
           </div>
           
-          {/* Detailed risk analysis */}
-          {showRiskMetrics && (
+          {/* Detailed hedging analysis */}
+          {showRiskMetrics && hedgingMetrics && (
             <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <h4 className="font-medium mb-3 text-blue-800">Risk Analysis</h4>
+              <h4 className="font-medium mb-3 text-blue-800">Hedging Effectiveness Analysis</h4>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div>
-                  <div className="font-medium text-blue-700">Profit Probability</div>
+                  <div className="font-medium text-blue-700">Protection Scenarios</div>
                   <div className="text-blue-600">
-                    {((profitZone.length / chartData.length) * 100).toFixed(1)}% of price range
+                    {hedgingMetrics.protectionEffectiveness.toFixed(1)}% of price range protected
                   </div>
                 </div>
                 <div>
-                  <div className="font-medium text-blue-700">Loss Probability</div>
+                  <div className="font-medium text-blue-700">Maximum Benefit</div>
                   <div className="text-blue-600">
-                    {((lossZone.length / chartData.length) * 100).toFixed(1)}% of price range
+                    {hedgingMetrics.maxProtection.toFixed(4)} rate improvement
                   </div>
                 </div>
                 <div>
-                  <div className="font-medium text-blue-700">Strategy Type</div>
+                  <div className="font-medium text-blue-700">Maximum Cost</div>
                   <div className="text-blue-600">
-                    {maxPayoff > Math.abs(minPayoff) ? 'Bullish Bias' : 
-                     Math.abs(minPayoff) > maxPayoff ? 'Bearish Bias' : 'Neutral'}
+                    {Math.abs(hedgingMetrics.minProtection).toFixed(4)} opportunity cost
                   </div>
                 </div>
               </div>
               
-              {breakEvenPoints.length > 1 && (
-                <div className="mt-3 pt-3 border-t border-blue-200">
-                  <div className="font-medium text-blue-700 mb-1">Multiple Break-even Points:</div>
-                  <div className="text-blue-600 text-xs">
-                    {breakEvenPoints.map((point, idx) => point.price.toFixed(4)).join(', ')}
-                  </div>
+              <div className="mt-3 pt-3 border-t border-blue-200">
+                <div className="text-xs text-blue-700">
+                  <strong>Interpretation:</strong> The hedged rate line shows your effective FX rate after applying the hedging strategy. 
+                  Areas where it diverges from the unhedged line indicate active protection or cost.
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
