@@ -41,10 +41,10 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
     // Filter selected scenarios
     const scenariosToExport = scenarios.filter(s => selectedScenarios.includes(s.id));
     
-    const contentPadding = 10; // Marge intérieure réduite
+    const contentPadding = 8; // Marge réduite
     let yOffset = contentPadding;
     
-    // Options générales pour les tableaux
+    // Options générales pour les tableaux - espacement réduit
     const tableOptions = {
       headStyles: { 
         fillColor: [60, 60, 80],
@@ -53,14 +53,17 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         halign: 'center'
       },
       bodyStyles: {
-        minCellWidth: 10
+        minCellWidth: 8,
+        cellPadding: 1.5 // Réduire le padding des cellules
       },
       alternateRowStyles: {
         fillColor: [245, 245, 250]
       },
       margin: { 
         left: contentPadding,
-        right: contentPadding
+        right: contentPadding,
+        top: 2,
+        bottom: 2
       },
       tableWidth: 'auto'
     };
@@ -72,27 +75,27 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         yOffset = contentPadding;
       }
 
-      // En-tête du document
+      // En-tête du document - réduit
       const pageWidth = pdf.internal.pageSize.width;
       pdf.setFillColor(60, 60, 80);
-      pdf.rect(0, 0, pageWidth, 20, 'F');
+      pdf.rect(0, 0, pageWidth, 16, 'F'); // Hauteur réduite
       
       pdf.setFont('helvetica', 'bold');
       pdf.setTextColor(255);
-      pdf.setFontSize(14);
-      pdf.text(scenario.name, pageWidth / 2, 12, { align: 'center' });
+      pdf.setFontSize(12); // Taille réduite
+      pdf.text(scenario.name, pageWidth / 2, 10, { align: 'center' });
       pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      pdf.text(`Generated on: ${new Date(scenario.timestamp).toLocaleDateString()}`, pageWidth / 2, 18, { align: 'center' });
+      pdf.setFontSize(8); // Taille réduite
+      pdf.text(`Generated: ${new Date(scenario.timestamp).toLocaleDateString()}`, pageWidth / 2, 14, { align: 'center' });
       
-      yOffset = 25;
+      yOffset = 20; // Espace réduit après l'en-tête
 
-      // Paramètres principaux et stress test côte à côte
+      // Paramètres principaux et stress test côte à côte - plus compact
       pdf.setTextColor(0);
-      pdf.setFontSize(12);
+      pdf.setFontSize(10); // Taille réduite
       pdf.setFont('helvetica', 'bold');
       pdf.text('Strategy Overview', contentPadding, yOffset);
-      yOffset += 6;
+      yOffset += 4; // Espace réduit
       
       const halfWidth = (pageWidth - (3 * contentPadding)) / 2;
       
@@ -123,8 +126,9 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         startY: yOffset,
         head: [basicParams[0]],
         body: basicParams.slice(1),
-        margin: { left: contentPadding },
-        tableWidth: halfWidth
+        margin: { left: contentPadding, top: 1, bottom: 1 },
+        tableWidth: halfWidth,
+        styles: { fontSize: 8 } // Police plus petite
       });
 
       // Tableau des paramètres de stress test (colonne de droite) si disponible
@@ -150,8 +154,9 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
           startY: yOffset,
           head: [stressParams[0]],
           body: stressParams.slice(1),
-          margin: { left: contentPadding * 2 + halfWidth },
-          tableWidth: halfWidth
+          margin: { left: contentPadding * 2 + halfWidth, top: 1, bottom: 1 },
+          tableWidth: halfWidth,
+          styles: { fontSize: 8 }
         });
       }
       
@@ -160,13 +165,13 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         (pdf as any).lastAutoTable.finalY,
         (pdf as any).autoTable.previous?.finalY || 0
       );
-      yOffset = finalY + 10;
+      yOffset = finalY + 6; // Espace réduit
       
-      // Composants de la stratégie
-      pdf.setFontSize(12);
+      // Composants de la stratégie - plus compact
+      pdf.setFontSize(10);
       pdf.setFont('helvetica', 'bold');
       pdf.text('Strategy Components', contentPadding, yOffset);
-      yOffset += 6;
+      yOffset += 4;
 
       const strategyData = scenario.strategy.map(opt => {
         const row = [
@@ -198,7 +203,8 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         body: strategyData,
         styles: { 
           overflow: 'linebreak',
-          cellPadding: 2
+          cellPadding: 1.5,
+          fontSize: 8
         },
         columnStyles: {
           0: { cellWidth: 'auto' },
@@ -209,16 +215,79 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         }
       });
       
-      yOffset = (pdf as any).lastAutoTable.finalY + 10;
+      yOffset = (pdf as any).lastAutoTable.finalY + 6;
 
-      // Add Summary Statistics on a new page
-      pdf.addPage();
-      yOffset = 20;
-      pdf.setFontSize(14);
+      // Graphiques sur la même page si possible
+      pdf.setFontSize(10);
       pdf.setFont('helvetica', 'bold');
-      pdf.text('Summary Statistics', 20, yOffset);
-      pdf.setFont('helvetica', 'normal');
-      yOffset += 10;
+      pdf.text('Performance Analysis', contentPadding, yOffset);
+      yOffset += 4;
+
+      // Calculer les dimensions des graphiques - plus compacts
+      const usableWidth = pageWidth - (2 * contentPadding);
+      const aspectRatio = 2.2; // Ratio plus allongé pour économiser l'espace vertical
+      const chartHeight = usableWidth / aspectRatio;
+      
+      try {
+        // Graphique P&L Evolution
+        const chartElement = document.getElementById(`pnl-chart-${scenario.id}`);
+        if (chartElement) {
+          const renderOptions = {
+            scale: 1.8, // Réduire légèrement la résolution
+            useCORS: true,
+            logging: false,
+            backgroundColor: '#ffffff'
+          };
+          
+          const canvas = await html2canvas(chartElement, renderOptions);
+          const imgData = canvas.toDataURL('image/png');
+          pdf.addImage(imgData, 'PNG', contentPadding, yOffset, usableWidth, chartHeight);
+          yOffset += chartHeight + 3; // Espace très réduit entre les graphiques
+        }
+        
+        // Vérifier si on a besoin d'une nouvelle page pour le graphique FX Hedging
+        if (yOffset > pdf.internal.pageSize.height - chartHeight - 15) {
+          pdf.addPage();
+          yOffset = contentPadding;
+          
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'bold');
+          pdf.text('FX Hedging Profile', contentPadding, yOffset);
+          yOffset += 4;
+        }
+        
+        // Graphique FX Hedging Profile (au lieu du Payoff Diagram)
+        const fxHedgingElement = document.getElementById(`fx-hedging-chart-${scenario.id}`);
+        if (fxHedgingElement) {
+          const renderOptions = {
+            scale: 1.8,
+            useCORS: true,
+            logging: false,
+            backgroundColor: '#ffffff'
+          };
+          
+          const canvas = await html2canvas(fxHedgingElement, renderOptions);
+          const imgData = canvas.toDataURL('image/png');
+          pdf.addImage(imgData, 'PNG', contentPadding, yOffset, usableWidth, chartHeight);
+          yOffset += chartHeight + 6;
+        }
+      } catch (error) {
+        console.error('Error rendering charts:', error);
+        pdf.setFontSize(8);
+        pdf.text('Error rendering charts', contentPadding, yOffset);
+        yOffset += 10;
+      }
+
+      // Summary Statistics - plus compact, sur la même page si possible
+      if (yOffset > pdf.internal.pageSize.height - 80) {
+        pdf.addPage();
+        yOffset = contentPadding;
+      }
+      
+      pdf.setFontSize(10);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('Summary Statistics', contentPadding, yOffset);
+      yOffset += 4;
 
       const totalPnL = scenario.results.reduce((sum, row) => sum + row.deltaPnL, 0);
       const totalUnhedgedCost = scenario.results.reduce((sum, row) => sum + row.unhedgedCost, 0);
@@ -241,106 +310,40 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       ];
 
       (pdf as any).autoTable({
-        headStyles: { 
-          fillColor: [60, 60, 80],
-          textColor: 255,
-          fontStyle: 'bold',
-          halign: 'center'
-        },
-        alternateRowStyles: {
-          fillColor: [240, 240, 245]
-        },
+        ...tableOptions,
         startY: yOffset,
         head: [summaryStats[0]],
         body: summaryStats.slice(1),
+        styles: { 
+          fontSize: 8,
+          cellPadding: 1.5
+        },
         columnStyles: {
           0: { 
             fontStyle: 'bold',
-            cellWidth: 80
+            cellWidth: 70
           },
           1: { 
             halign: 'right',
             cellWidth: 'auto'
           }
         },
-        tableWidth: 'auto',
-        margin: { left: 20 }
+        tableWidth: 'auto'
       });
       
-      yOffset = (pdf as any).lastAutoTable.finalY + 10;
-      
-      // Vérifier si on a besoin d'une nouvelle page pour les graphiques
-      if (yOffset > pdf.internal.pageSize.height - 60) {
-        pdf.addPage();
-        yOffset = contentPadding;
-      }
-      
-      // Graphiques
-      pdf.setFontSize(12);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Performance Charts', contentPadding, yOffset);
-      yOffset += 6;
-
-      // Calculer les dimensions des graphiques
-      const usableWidth = pageWidth - (2 * contentPadding);
-      const aspectRatio = 1.8; // Ratio largeur:hauteur (optimisé pour les graphiques)
-      const chartHeight = usableWidth / aspectRatio;
-      
-      try {
-        // Graphique P&L Evolution
-        const chartElement = document.getElementById(`pnl-chart-${scenario.id}`);
-        if (chartElement) {
-          const renderOptions = {
-            scale: 2,
-            useCORS: true,
-            logging: false,
-            backgroundColor: '#ffffff'
-          };
-          
-          const canvas = await html2canvas(chartElement, renderOptions);
-          const imgData = canvas.toDataURL('image/png');
-          pdf.addImage(imgData, 'PNG', contentPadding, yOffset, usableWidth, chartHeight);
-          yOffset += chartHeight + 5; // Espace réduit entre les graphiques
-        }
-        
-        // Vérifier si on a besoin d'une nouvelle page pour le deuxième graphique
-        if (yOffset > pdf.internal.pageSize.height - chartHeight - 20) {
-          pdf.addPage();
-          yOffset = contentPadding;
-        }
-        
-        // Graphique Payoff
-        const payoffElement = document.getElementById(`payoff-chart-${scenario.id}`);
-        if (payoffElement) {
-          const renderOptions = {
-            scale: 2,
-            useCORS: true,
-            logging: false,
-            backgroundColor: '#ffffff'
-          };
-          
-          const canvas = await html2canvas(payoffElement, renderOptions);
-          const imgData = canvas.toDataURL('image/png');
-          pdf.addImage(imgData, 'PNG', contentPadding, yOffset, usableWidth, chartHeight);
-          yOffset += chartHeight + 10;
-        }
-      } catch (error) {
-        console.error('Error rendering charts:', error);
-        pdf.text('Error rendering charts', contentPadding, yOffset);
-        yOffset += 10;
-      }
+      yOffset = (pdf as any).lastAutoTable.finalY + 6;
       
       // Add Monthly & Yearly P&L Breakdown on a new page
       pdf.addPage();
-      yOffset = 20;
-      pdf.setFontSize(14);
+      yOffset = contentPadding;
+      pdf.setFontSize(12);
       pdf.setFont('helvetica', 'bold');
-      pdf.text('Monthly & Yearly P&L Breakdown', 20, yOffset);
+      pdf.text('Monthly & Yearly P&L Breakdown', contentPadding, yOffset);
       pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      yOffset += 8;
-      pdf.text('Values shown in thousands', 20, yOffset);
-      yOffset += 15;
+      pdf.setFontSize(8);
+      yOffset += 6;
+      pdf.text('Values shown in thousands', contentPadding, yOffset);
+      yOffset += 8; // Espace réduit
       
       // Organiser les données par année et par mois
       const pnlByYearMonth: Record<string, Record<string, number>> = {};
@@ -428,8 +431,8 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         body: monthlyPnLData,
         styles: { 
           overflow: 'linebreak',
-          cellPadding: 3,
-          fontSize: 8 // Réduire la taille de police pour que tout rentre
+          cellPadding: 1.5, // Réduit
+          fontSize: 7 // Police plus petite
         },
         columnStyles: { 
           0: { fontStyle: 'bold', halign: 'left' },
@@ -459,13 +462,13 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         }
       });
       
-      yOffset = (pdf as any).lastAutoTable.finalY + 10;
+      yOffset = (pdf as any).lastAutoTable.finalY + 6; // Espace réduit
       
-      // Statistics by Year
-      pdf.setFontSize(12);
+      // Statistics by Year - plus compact
+      pdf.setFontSize(10);
       pdf.setFont('helvetica', 'bold');
       pdf.text('Summary Statistics by Year', contentPadding, yOffset);
-      yOffset += 6;
+      yOffset += 4;
 
       // Calculate yearly statistics
       const yearlyResults = sortedYears.map(year => {
@@ -503,7 +506,8 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         head: [['Year', 'Hedged Cost', 'Unhedged Cost', 'Delta P&L', 'Strategy Premium', 'Strike Target', 'Cost Reduction (%)']],
         body: yearlyResults,
         styles: {
-          fontSize: 9 // Taille de police réduite pour adapter le contenu
+          fontSize: 8, // Police réduite
+          cellPadding: 1.5
         },
         columnStyles: {
           0: { fontStyle: 'bold' },
@@ -535,14 +539,14 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
         }
       });
 
-      // Add Detailed Results on a new page
+      // Add Detailed Results on a new page - plus compact
       pdf.addPage();
-      yOffset = 20;
-      pdf.setFontSize(14);
+      yOffset = contentPadding;
+      pdf.setFontSize(12);
       pdf.setFont('helvetica', 'bold'); 
-      pdf.text('Detailed Results', 20, yOffset);
+      pdf.text('Detailed Results', contentPadding, yOffset);
       pdf.setFont('helvetica', 'normal');
-      yOffset += 10;
+      yOffset += 6; // Espace réduit
       
       const detailedResults = scenario.results.map(row => [
         row.date,
@@ -556,21 +560,13 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       ]);
 
       (pdf as any).autoTable({
-        headStyles: { 
-          fillColor: [60, 60, 80],
-          textColor: 255,
-          fontStyle: 'bold',
-          halign: 'center'
-        },
-        alternateRowStyles: {
-          fillColor: [240, 240, 245]
-        },
+        ...tableOptions,
         startY: yOffset,
         head: [['Date', 'Forward', 'Real Price', 'Strategy Price', 'Payoff', 'Hedged Cost', 'Unhedged Cost', 'Delta P&L']],
         body: detailedResults,
         styles: {
-          fontSize: 8,
-          cellPadding: 2
+          fontSize: 7, // Police plus petite
+          cellPadding: 1 // Padding minimal
         },
         columnStyles: {
           0: { cellWidth: 'auto' },
@@ -600,8 +596,7 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
               console.error('Erreur lors du formatage de la cellule:', e);
             }
           }
-        },
-        margin: { left: 10, right: 10 }
+        }
       });
       
       // Ajouter un pied de page à toutes les pages

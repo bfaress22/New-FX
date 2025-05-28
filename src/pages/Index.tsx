@@ -2193,7 +2193,7 @@ const Index = () => {
 
   // Auto-update price ranges when currency pair or spot price changes
   useEffect(() => {
-    const newRanges = generateFXPriceRanges(params.currencyPair, params.spotPrice);
+    const newRanges = generateFXPriceRanges(params.currencyPair.symbol, params.spotPrice);
     setPriceRanges(newRanges);
   }, [params.currencyPair.symbol, params.spotPrice]);
 
@@ -2778,7 +2778,18 @@ const Index = () => {
         if (!newImpliedVols[monthKey]) {
           newImpliedVols[monthKey] = {};
         }
-        newImpliedVols[monthKey].global = stat.volatility;
+        
+        // Stocker la volatilité globale pour le mois
+        newImpliedVols[monthKey].global = stat.volatility * 100; // Convertir en pourcentage
+        
+        // Appliquer également cette volatilité à chaque option de la stratégie
+        strategy.forEach((option, index) => {
+          // Ignorer les swaps et forwards qui n'utilisent pas de volatilité
+          if (option.type !== 'swap' && option.type !== 'forward') {
+            const optionKey = `${option.type}-${index}`;
+            newImpliedVols[monthKey][optionKey] = stat.volatility * 100; // Convertir en pourcentage
+          }
+        });
       }
     });
 

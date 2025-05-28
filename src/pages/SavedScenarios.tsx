@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { SavedScenario } from '../types/Scenario';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
 import ScenariosPdfExport from '../components/ScenariosPdfExport';
 
 // Add this interface for yearly results
@@ -15,6 +15,191 @@ interface YearlyResult {
   strategyPremium: number;
   volume: number;
 }
+
+// Ajouter la fonction generateFXHedgingData depuis PayoffChart.tsx
+const generateFXHedgingData = (strategy: any[], spot: number, includePremium: boolean = false) => {
+  const data = [];
+  const minSpot = spot * 0.7;  // -30% du spot
+  const maxSpot = spot * 1.3;  // +30% du spot
+  const step = (maxSpot - minSpot) / 100; // 100 points
+
+  for (let currentSpot = minSpot; currentSpot <= maxSpot; currentSpot += step) {
+    const unhedgedRate = currentSpot;
+    let hedgedRate = currentSpot;
+    let totalPremium = 0;
+
+    // Process each option in the strategy
+    strategy.forEach(option => {
+      const strike = option.strikeType === 'percent' 
+        ? spot * (option.strike / 100) 
+        : option.strike;
+      
+      // Utilise la quantité avec son signe (+ pour achat, - pour vente)
+      const quantity = option.quantity / 100;
+      
+      // Calculate option premium (simplified)
+      const premium = 0.01 * Math.abs(quantity); // Prime simplifiée, toujours positive
+      
+      if (option.type === 'put') {
+        // PUT: La logique change selon achat ou vente
+        if (currentSpot < strike) {
+          // Dans la monnaie
+          if (quantity > 0) {
+            // ACHAT PUT: Protection contre la baisse
+            hedgedRate = currentSpot - ((strike - currentSpot) * Math.abs(quantity));
+          } else if (quantity < 0) {
+            // VENTE PUT: Obligation d'achat à un prix élevé
+            hedgedRate = currentSpot + ((strike - currentSpot) * Math.abs(quantity));
+          }
+        }
+        // Hors de la monnaie: pas d'effet sur le taux (sauf prime)
+      } 
+      else if (option.type === 'call') {
+        // CALL: La logique change selon achat ou vente
+        if (currentSpot > strike) {
+          // Dans la monnaie
+          if (quantity > 0) {
+            // ACHAT CALL: Protection contre la hausse
+            hedgedRate = currentSpot - ((currentSpot - strike) * Math.abs(quantity));
+          } else if (quantity < 0) {
+            // VENTE CALL: Obligation de vente à un prix bas
+            hedgedRate = currentSpot + ((currentSpot - strike) * Math.abs(quantity));
+          }
+        }
+        // Hors de la monnaie: pas d'effet sur le taux (sauf prime)
+      }
+      else if (option.type === 'forward') {
+        // FORWARD: Taux fixe peu importe le spot
+        hedgedRate = strike * Math.abs(quantity) + currentSpot * (1 - Math.abs(quantity));
+      }
+      else if (option.type === 'swap') {
+        // SWAP: Échange à taux fixe
+        hedgedRate = strike;
+      }
+      
+      // Barrier options (simplified logic)
+      else if (option.type.includes('knockout') || option.type.includes('knockin')) {
+        const barrier = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        
+        let isBarrierBroken = false;
+        
+        if (option.type.includes('knockout')) {
+          if (option.type.includes('call')) {
+            isBarrierBroken = currentSpot >= barrier;
+          } else if (option.type.includes('put')) {
+            isBarrierBroken = currentSpot <= barrier;
+          }
+        } else if (option.type.includes('knockin')) {
+          if (option.type.includes('call')) {
+            isBarrierBroken = currentSpot >= barrier;
+          } else if (option.type.includes('put')) {
+            isBarrierBroken = currentSpot <= barrier;
+          }
+        }
+        
+        if (option.type.includes('knockout')) {
+          // Option knocked out = pas de protection
+          if (!isBarrierBroken) {
+            if (option.type.includes('call') && currentSpot > strike) {
+              if (quantity > 0) {
+                hedgedRate = currentSpot - ((currentSpot - strike) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                hedgedRate = currentSpot + ((currentSpot - strike) * Math.abs(quantity));
+              }
+            } else if (option.type.includes('put') && currentSpot < strike) {
+              if (quantity > 0) {
+                hedgedRate = currentSpot - ((strike - currentSpot) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                hedgedRate = currentSpot + ((strike - currentSpot) * Math.abs(quantity));
+              }
+            }
+          }
+        } else { // knockin
+          // Option knocked in = protection active
+          if (isBarrierBroken) {
+            if (option.type.includes('call') && currentSpot > strike) {
+              if (quantity > 0) {
+                hedgedRate = currentSpot - ((currentSpot - strike) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                hedgedRate = currentSpot + ((currentSpot - strike) * Math.abs(quantity));
+              }
+            } else if (option.type.includes('put') && currentSpot < strike) {
+              if (quantity > 0) {
+                hedgedRate = currentSpot - ((strike - currentSpot) * Math.abs(quantity));
+              } else if (quantity < 0) {
+                hedgedRate = currentSpot + ((strike - currentSpot) * Math.abs(quantity));
+              }
+            }
+          }
+        }
+      }
+      
+      // Ajuster pour la prime avec le signe correct selon achat/vente
+      if (quantity > 0) {
+        // Pour les achats d'options, on paie la prime (coût négatif)
+        totalPremium += premium;
+      } else if (quantity < 0) {
+        // Pour les ventes d'options, on reçoit la prime (gain positif)
+        totalPremium -= premium;
+      }
+    });
+
+    // Ajuster pour la prime si incluse
+    if (includePremium && strategy.length > 0) {
+      hedgedRate -= totalPremium;
+    }
+
+    data.push({
+      spot: parseFloat(currentSpot.toFixed(4)),
+      unhedgedRate: parseFloat(unhedgedRate.toFixed(4)),
+      hedgedRate: parseFloat(hedgedRate.toFixed(4))
+    });
+  }
+
+  return data;
+};
+
+// Custom tooltip for FX hedging profile
+const CustomFXTooltip = ({ 
+  active, 
+  payload, 
+  label, 
+  currencyPair
+}: any) => {
+  
+  if (active && payload && payload.length) {
+    const hedgedValue = payload.find((p: any) => p.dataKey === 'hedgedRate')?.value;
+    const unhedgedValue = payload.find((p: any) => p.dataKey === 'unhedgedRate')?.value;
+    const protection = hedgedValue && unhedgedValue ? (hedgedValue - unhedgedValue) : 0;
+    
+    return (
+      <div className="p-3 rounded-lg shadow-lg bg-background border border-border">
+        <p className="font-semibold">
+          {currencyPair?.symbol || 'FX'} Rate: {Number(label).toFixed(4)}
+        </p>
+        {payload.map((entry: any, index: number) => (
+          <p key={`item-${index}`} style={{ color: entry.color }}>
+            {entry.name}: {Number(entry.value).toFixed(4)}
+          </p>
+        ))}
+        <hr className="my-2 border-border" />
+        <p className="text-sm font-medium">
+          Protection: {protection > 0 ? '+' : ''}{protection.toFixed(4)}
+          {protection > 0 ? ' ✅' : protection < 0 ? ' ❌' : ' ⚪'}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          <span className="font-medium">Base:</span> {currencyPair?.base || 'BASE'}
+          {' | '}
+          <span className="font-medium">Quote:</span> {currencyPair?.quote || 'QUOTE'}
+        </p>
+      </div>
+    );
+  }
+
+  return null;
+};
 
 const SavedScenarios = () => {
   const [scenarios, setScenarios] = React.useState<SavedScenario[]>([]);
@@ -172,7 +357,7 @@ const SavedScenarios = () => {
                       ) : (
                         <>
                           <li>Total Volume: {scenario.params.totalVolume?.toLocaleString()}</li>
-                          <li>Spot Price: {scenario.params.spotPrice}</li>
+                      <li>Spot Price: {scenario.params.spotPrice}</li>
                         </>
                       )}
                     </ul>
@@ -231,16 +416,78 @@ const SavedScenarios = () => {
                     </ResponsiveContainer>
                   </div>
 
-                  <div className="h-64" id={`payoff-chart-${scenario.id}`}>
-                    <h3 className="font-semibold mb-2">Payoff Diagram</h3>
+                  <div className="h-80" id={`fx-hedging-chart-${scenario.id}`}>
+                    <h3 className="font-semibold mb-2">FX Hedging Profile</h3>
+                    <div className="text-sm text-muted-foreground mb-2">
+                      Hedged vs Unhedged {scenario.params.currencyPair?.symbol || 'FX'} rates across market scenarios
+                    </div>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={scenario.payoffData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="price" />
-                        <YAxis />
-                        <Tooltip />
-                        <Legend />
-                        <Line type="monotone" dataKey="payoff" name="Strategy Payoff" stroke="#82ca9d" />
+                      <LineChart 
+                        data={generateFXHedgingData(scenario.strategy, scenario.params.spotPrice, false)}
+                        margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                        <XAxis
+                          dataKey="spot"
+                          domain={["dataMin", "dataMax"]}
+                          tickFormatter={(value) => value.toFixed(3)}
+                          label={{
+                            value: `${scenario.params.currencyPair?.symbol || 'FX'} Rate`,
+                            position: "insideBottom",
+                            offset: -10,
+                          }}
+                        />
+                        <YAxis
+                          tickFormatter={(value) => value.toFixed(3)}
+                          label={{
+                            value: `Effective Rate (${scenario.params.currencyPair?.quote || 'Quote Currency'})`,
+                            angle: -90,
+                            position: "insideLeft",
+                          }}
+                        />
+                        <Tooltip content={
+                          <CustomFXTooltip currencyPair={scenario.params.currencyPair} />
+                        } />
+                        <Legend 
+                          verticalAlign="top" 
+                          height={36}
+                        />
+                        
+                        {/* Unhedged rate line (reference) */}
+                        <Line
+                          type="monotone"
+                          dataKey="unhedgedRate"
+                          stroke="#9CA3AF"
+                          strokeWidth={2}
+                          strokeDasharray="4 4"
+                          dot={false}
+                          name="Unhedged Rate"
+                        />
+                        
+                        {/* Hedged rate line */}
+                        <Line
+                          type="monotone"
+                          dataKey="hedgedRate"
+                          stroke="#3B82F6"
+                          strokeWidth={3}
+                          dot={false}
+                          activeDot={{ r: 6, fill: "#3B82F6" }}
+                          name="Hedged Rate"
+                        />
+                        
+                        {/* Reference line for current spot */}
+                        <ReferenceLine
+                          x={scenario.params.spotPrice}
+                          stroke="#059669"
+                          strokeWidth={2}
+                          strokeDasharray="5 5"
+                          label={{
+                            value: "Current Spot",
+                            position: "top",
+                            fill: "#059669",
+                            fontSize: 11,
+                          }}
+                        />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>

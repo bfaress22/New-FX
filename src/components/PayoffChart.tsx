@@ -382,20 +382,20 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
           
           {/* Quick metrics row */}
           {hedgingMetrics && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-              <div className="text-center p-2 bg-green-50 rounded border">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+            <div className="text-center p-2 bg-green-50 rounded border">
                 <div className="font-medium text-green-700">Max Protection</div>
                 <div className="text-green-600 font-semibold">{hedgingMetrics.maxProtection.toFixed(4)}</div>
-              </div>
-              <div className="text-center p-2 bg-red-50 rounded border">
+            </div>
+            <div className="text-center p-2 bg-red-50 rounded border">
                 <div className="font-medium text-red-700">Max Cost</div>
                 <div className="text-red-600 font-semibold">{Math.abs(hedgingMetrics.minProtection).toFixed(4)}</div>
-              </div>
+            </div>
               <div className="text-center p-2 bg-blue-50 rounded border">
                 <div className="font-medium text-blue-700">Protection Range</div>
                 <div className="text-blue-600 font-semibold">{hedgingMetrics.protectionEffectiveness.toFixed(1)}%</div>
               </div>
-              <div className="text-center p-2 bg-gray-50 rounded border">
+            <div className="text-center p-2 bg-gray-50 rounded border">
                 <div className="font-medium text-gray-700">Current Spot</div>
                 <div className="text-gray-600 font-semibold">{spot.toFixed(4)}</div>
               </div>
@@ -414,61 +414,71 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
         </div>
       </CardHeader>
       <CardContent>
-        <div style={{ height: "400px" }}>
+        <div style={{ height: "400px", background: "#111", borderRadius: 12, padding: 8 }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart 
               data={chartData} 
               margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
             >
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#222" opacity={0.7} />
               <XAxis
                 dataKey="spot"
                 domain={["dataMin", "dataMax"]}
                 tickFormatter={(value) => value.toFixed(3)}
+                stroke="#EEE"
+                tick={{ fill: '#EEE', fontWeight: 600 }}
                 label={{
                   value: `${currencyPair?.symbol || 'FX'} Rate`,
                   position: "insideBottom",
                   offset: -10,
+                  fill: '#FFB800',
+                  fontWeight: 700
                 }}
               />
               <YAxis
                 tickFormatter={(value) => value.toFixed(3)}
+                stroke="#EEE"
+                tick={{ fill: '#EEE', fontWeight: 600 }}
                 label={{
                   value: `Effective Rate (${currencyPair?.quote || 'Quote Currency'})`,
                   angle: -90,
                   position: "insideLeft",
+                  fill: '#FFB800',
+                  fontWeight: 700
                 }}
               />
-              <Tooltip content={
-                <CustomTooltip currencyPair={currencyPair} />
-              } />
+              <Tooltip
+                content={<CustomTooltip currencyPair={currencyPair} />}
+                wrapperStyle={{ background: '#181818', border: '1.5px solid #FFB800', borderRadius: 8, color: '#FFB800' }}
+                contentStyle={{ background: '#181818', color: '#FFB800', border: 'none' }}
+                labelStyle={{ color: '#FFB800', fontWeight: 700 }}
+                itemStyle={{ color: '#FFB800' }}
+              />
               <Legend 
                 verticalAlign="top" 
                 height={36}
+                wrapperStyle={{ color: '#FFB800' }}
               />
-              
               {/* Unhedged rate line (reference) */}
               <Line
                 type="monotone"
                 dataKey="unhedgedRate"
-                stroke="#9CA3AF"
+                stroke="#B0B0B0"
                 strokeWidth={2}
                 strokeDasharray="4 4"
                 dot={false}
                 name="Unhedged Rate"
               />
-              
               {/* Hedged rate line */}
               <Line
                 type="monotone"
                 dataKey="hedgedRate"
-                stroke="#3B82F6"
+                stroke="#FFB800"
                 strokeWidth={3}
                 dot={false}
-                activeDot={{ r: 6, fill: "#3B82F6" }}
+                activeDot={{ r: 6, fill: "#FFB800" }}
                 name={`Hedged Rate${showPremium ? ' (net of premium)' : ' (excluding premium)'}`}
               />
-              
               {/* Reference lines */}
               {getReferenceLines()}
             </LineChart>
@@ -514,11 +524,11 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
             </div>
             
             <div className="mt-3 pt-3 border-t border-border">
-              <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                 <strong>Hedging Logic:</strong> This chart shows how your hedging strategy affects the effective FX rate 
                 compared to remaining unhedged across different market scenarios.
-              </p>
-            </div>
+                </p>
+              </div>
           </div>
           
           {/* Detailed hedging analysis */}
@@ -546,7 +556,7 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
                 </div>
               </div>
               
-              <div className="mt-3 pt-3 border-t border-blue-200">
+                <div className="mt-3 pt-3 border-t border-blue-200">
                 <div className="text-xs text-blue-700">
                   <strong>Interpretation:</strong> The hedged rate line shows your effective FX rate after applying the hedging strategy. 
                   Areas where it diverges from the unhedged line indicate active protection or cost.
