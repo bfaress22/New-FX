@@ -695,7 +695,7 @@ const Index = () => {
   const [riskMatrixResults, setRiskMatrixResults] = useState<RiskMatrixResult[]>([]);
 
   // Forex-specific states
-  const [optionPricingModel, setOptionPricingModel] = useState<'black-scholes' | 'garman-kohlhagen'>('garman-kohlhagen');
+  const [optionPricingModel, setOptionPricingModel] = useState<'black-scholes' | 'garman-kohlhagen' | 'monte-carlo'>('garman-kohlhagen');
   const [barrierPricingModel, setBarrierPricingModel] = useState<'monte-carlo' | 'closed-form'>('monte-carlo');
 
   // Ajouter cet état
@@ -858,6 +858,49 @@ const Index = () => {
     }
   };
 
+  // Nouvelle fonction pour calculer les options vanilla avec Monte Carlo
+  const calculateVanillaOptionMonteCarlo = (
+    optionType: string,
+    S: number,      // Current price
+    K: number,      // Strike price
+    r_d: number,    // Domestic risk-free rate
+    r_f: number,    // Foreign risk-free rate 
+    t: number,      // Time to maturity in years
+    sigma: number,  // Volatility
+    numSimulations: number = 1000 // Number of simulations
+  ) => {
+    let payoffSum = 0;
+    
+    for (let i = 0; i < numSimulations; i++) {
+      // Generate random normal variable (using Box-Muller transform for better accuracy)
+      const u1 = Math.random();
+      const u2 = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      
+      // Simulate final FX price using geometric Brownian motion
+      const finalPrice = S * Math.exp(
+        (r_d - r_f - 0.5 * sigma * sigma) * t + 
+        sigma * Math.sqrt(t) * z
+      );
+      
+      // Calculate payoff
+      let payoff = 0;
+      if (optionType === 'call') {
+        payoff = Math.max(finalPrice - K, 0);
+      } else if (optionType === 'put') {
+        payoff = Math.max(K - finalPrice, 0);
+      }
+      
+      payoffSum += payoff;
+    }
+    
+    // Calculate average payoff and discount to present value
+    const averagePayoff = payoffSum / numSimulations;
+    const optionPrice = averagePayoff * Math.exp(-r_d * t);
+    
+    return Math.max(0, optionPrice);
+  };
+
   const calculateOptionPrice = (type, S, K, r, t, sigma, date?, optionIndex?) => {
     // Utilize the volatility implied if available
     let effectiveSigma = sigma;
@@ -921,6 +964,18 @@ const Index = () => {
     if (optionPricingModel === 'garman-kohlhagen') {
       // Use Garman-Kohlhagen for FX options
       price = calculateGarmanKohlhagenPrice(type, S, K, params.domesticRate / 100, params.foreignRate / 100, t, effectiveSigma);
+    } else if (optionPricingModel === 'monte-carlo') {
+      // Use Monte Carlo for vanilla options
+      price = calculateVanillaOptionMonteCarlo(
+        type, 
+        S, 
+        K, 
+        params.domesticRate / 100, 
+        params.foreignRate / 100, 
+        t, 
+        effectiveSigma,
+        1000 // Number of simulations for vanilla options
+      );
     } else {
       // Use traditional Black-Scholes
       const d1 = (Math.log(S/K) + (r + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
@@ -1773,6 +1828,18 @@ const Index = () => {
               params.foreignRate/100,
               t,
               effectiveSigma
+            );
+          } else if (optionPricingModel === 'monte-carlo') {
+            // Use Monte Carlo for vanilla options
+            price = calculateVanillaOptionMonteCarlo(
+              option.type,
+              params.spotPrice,
+              strike,
+              params.domesticRate / 100,
+              params.foreignRate / 100,
+              t,
+              effectiveSigma,
+              1000 // Number of simulations for vanilla options
             );
           } else {
             // Black-Scholes fallback
@@ -5050,7 +5117,7 @@ const Index = () => {
                   <label className="block text-sm font-medium mb-2">Model Selection</label>
                   <Select 
                     value={optionPricingModel} 
-                    onValueChange={(value: string) => setOptionPricingModel(value as 'black-scholes' | 'garman-kohlhagen')}
+                    onValueChange={(value: string) => setOptionPricingModel(value as 'black-scholes' | 'garman-kohlhagen' | 'monte-carlo')}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select pricing model" />
@@ -5058,6 +5125,7 @@ const Index = () => {
                     <SelectContent>
                       <SelectItem value="black-scholes">Black-Scholes</SelectItem>
                       <SelectItem value="garman-kohlhagen">Garman-Kohlhagen (FX)</SelectItem>
+                      <SelectItem value="monte-carlo">Monte Carlo (Vanilla Options)</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground mt-1">
