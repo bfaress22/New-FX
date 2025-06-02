@@ -1,0 +1,346 @@
+/* Bloomberg Terminal Theme */
+.bloomberg-theme {
+  /* Couleurs principales Bloomberg */
+  --background: 220 13% 10%;  /* Fond noir-bleuté */
+  --foreground: 0 0% 93%;     /* Texte presque blanc */
+
+  --card: 220 13% 12%;        /* Cartes légèrement plus claires */
+  --card-foreground: 0 0% 93%;
+
+  --popover: 220 13% 12%;
+  --popover-foreground: 0 0% 93%;
+
+  /* Orange emblématique de Bloomberg */
+  --primary: 25 100% 55%;     /* Orange Bloomberg */
+  --primary-foreground: 0 0% 100%;
+
+  /* Vert Bloomberg pour les valeurs positives */
+  --accent: 120 100% 40%;     /* Vert Bloomberg */
+  --accent-foreground: 0 0% 100%;
+
+  /* Rouge Bloomberg pour les valeurs négatives */
+  --destructive: 0 100% 50%;  /* Rouge Bloomberg */
+  --destructive-foreground: 0 0% 100%;
+
+  /* Autres éléments d'interface */
+  --secondary: 220 13% 20%;   /* Arrière-plan secondaire */
+  --secondary-foreground: 0 0% 93%;
+
+  --muted: 220 13% 15%;
+  --muted-foreground: 0 0% 70%;
+
+  --border: 220 13% 25%;
+  --input: 220 13% 18%;
+  --ring: 25 100% 55%;        /* Orange Bloomberg pour le focus */
+
+  --radius: 0.35rem;          /* Coins moins arrondis, plus professionnels */
+
+  /* Sidebar spécifique */
+  --sidebar-background: 220 13% 8%;
+  --sidebar-foreground: 0 0% 93%;
+  --sidebar-primary: 25 100% 55%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 220 13% 20%;
+  --sidebar-accent-foreground: 0 0% 93%;
+  --sidebar-border: 220 13% 20%;
+  --sidebar-ring: 25 100% 55%;
+}
+
+/* Styles spécifiques pour le mode Bloomberg */
+.bloomberg-theme .card {
+  border-width: 1px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* Style pour les tableaux façon Bloomberg */
+.bloomberg-theme table {
+  border-collapse: collapse;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.875rem;
+}
+
+.bloomberg-theme thead {
+  background-color: hsl(25, 100%, 55%, 0.15); /* Orange translucide */
+}
+
+.bloomberg-theme th {
+  font-weight: 600;
+  color: hsl(25, 100%, 55%); /* Orange Bloomberg */
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+.bloomberg-theme td, 
+.bloomberg-theme th {
+  padding: 0.5rem;
+  border: 1px solid hsl(220, 13%, 25%);
+}
+
+/* Style pour les lignes alternées */
+.bloomberg-theme tr:nth-child(even) {
+  background-color: hsl(220, 13%, 14%);
+}
+
+/* Style pour les nombres positifs/négatifs */
+.bloomberg-theme .positive-value {
+  color: hsl(120, 100%, 40%); /* Vert Bloomberg */
+}
+
+.bloomberg-theme .negative-value {
+  color: hsl(0, 100%, 50%); /* Rouge Bloomberg */
+}
+
+/* Style pour les graphiques */
+.bloomberg-theme .recharts-cartesian-grid-horizontal line,
+.bloomberg-theme .recharts-cartesian-grid-vertical line {
+  stroke: hsl(220, 13%, 20%);
+  stroke-dasharray: 3 3;
+}
+
+.bloomberg-theme .recharts-text.recharts-cartesian-axis-tick-value {
+  fill: hsl(0, 0%, 70%);
+  font-size: 0.7rem;
+}
+
+/* Polices d'écriture pour Bloomberg */
+.bloomberg-theme {
+  font-family: 'Roboto', 'Roboto Mono', 'Inter', system-ui, sans-serif;
+}
+
+.bloomberg-theme code,
+.bloomberg-theme pre,
+.bloomberg-theme .monospace {
+  font-family: 'Roboto Mono', monospace;
+}
+
+/* Boutons Bloomberg */
+.bloomberg-theme .button-bloomberg-primary {
+  background-color: hsl(25, 100%, 55%);
+  color: white;
+  border: none;
+  font-weight: 600;
+}
+
+.bloomberg-theme .button-bloomberg-secondary {
+  background-color: hsl(220, 13%, 18%);
+  color: hsl(0, 0%, 93%);
+  border: 1px solid hsl(220, 13%, 25%);
+}
+
+/* Styles pour Strategy Components (thème Bloomberg) */
+.bloomberg-theme .strategy-components-title {
+  color: hsl(25, 100%, 55%);
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid hsl(220, 13%, 25%);
+  padding-bottom: 0.5rem;
+}
+
+.bloomberg-theme select,
+.bloomberg-theme input[type="number"],
+.bloomberg-theme input[type="text"] {
+  background-color: hsl(220, 13%, 15%);
+  border: 1px solid hsl(220, 13%, 25%);
+  color: hsl(0, 0%, 93%);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.875rem;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+}
+
+.bloomberg-theme select option {
+  background-color: hsl(220, 13%, 15%);
+  color: hsl(0, 0%, 93%);
+}
+
+.bloomberg-theme select:focus,
+.bloomberg-theme input:focus {
+  border-color: hsl(25, 100%, 55%);
+  outline: none;
+  box-shadow: 0 0 0 1px hsl(25, 100%, 55%, 0.5);
+}
+
+.bloomberg-theme label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: hsl(0, 0%, 70%);
+  margin-bottom: 0.25rem;
+  display: block;
+}
+
+/* Styles pour les en-têtes de sections */
+.bloomberg-theme h2, 
+.bloomberg-theme .section-title {
+  color: hsl(25, 100%, 55%);
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+}
+
+/* Styles pour le tableau de P&L */
+.bloomberg-theme .monthly-breakdown th,
+.bloomberg-theme th {
+  font-size: 0.7rem;
+  padding: 0.4rem;
+  text-align: center;
+  background-color: hsl(220, 13%, 15%);
+  color: hsl(25, 100%, 55%);
+  border: 1px solid hsl(220, 13%, 30%);
+  text-transform: uppercase;
+}
+
+.bloomberg-theme .monthly-breakdown td,
+.bloomberg-theme td {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.75rem;
+  text-align: right;
+  padding: 0.35rem;
+  border: 1px solid hsl(220, 13%, 30%);
+}
+
+.bloomberg-theme .monthly-breakdown .month-header,
+.bloomberg-theme tr th {
+  color: hsl(25, 100%, 55%);
+  font-weight: 600;
+  background-color: hsl(220, 13%, 12%);
+}
+
+.bloomberg-theme .monthly-breakdown .year-column,
+.bloomberg-theme tr td:first-child {
+  background-color: hsl(220, 13%, 18%);
+  color: hsl(0, 0%, 93%);
+  font-weight: 600;
+  text-align: left;
+}
+
+.bloomberg-theme .profit-cell,
+.bloomberg-theme .bg-green-100 {
+  background-color: hsla(120, 70%, 40%, 0.15) !important;
+  color: hsl(120, 100%, 70%) !important;
+}
+
+.bloomberg-theme .loss-cell,
+.bloomberg-theme .bg-red-100 {
+  background-color: hsla(0, 70%, 40%, 0.15) !important;
+  color: hsl(0, 100%, 70%) !important;
+}
+
+/* Ajustement spécifique pour le tableau Monthly & Yearly P&L Breakdown */
+.bloomberg-theme table {
+  width: 100%;
+  background-color: hsl(220, 13%, 10%);
+  border-collapse: collapse;
+}
+
+.bloomberg-theme thead tr {
+  background-color: hsl(220, 13%, 15%);
+}
+
+.bloomberg-theme tr:nth-child(even) {
+  background-color: hsl(220, 13%, 12%);
+}
+
+.bloomberg-theme tr:nth-child(odd) {
+  background-color: hsl(220, 13%, 10%);
+}
+
+.bloomberg-theme tr:last-child {
+  background-color: hsl(220, 13%, 15%);
+}
+
+/* Style pour les cellules vides ou avec le symbole "-" */
+.bloomberg-theme td:empty,
+.bloomberg-theme td:contains("-") {
+  background-color: hsla(0, 0%, 30%, 0.1);
+}
+
+/* Style pour les en-têtes de sections */
+.bloomberg-theme h2,
+.bloomberg-theme .section-title,
+.bloomberg-theme CardTitle {
+  color: hsl(25, 100%, 55%);
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+  background-color: transparent;
+}
+
+/* Styles pour Monte Carlo Simulation */
+.bloomberg-theme .monte-carlo-section {
+  background-color: hsl(220, 13%, 12%);
+  border: 1px solid hsl(220, 13%, 25%);
+  border-radius: 0.35rem;
+  padding: 1rem;
+}
+
+.bloomberg-theme .monte-carlo-title {
+  color: hsl(25, 100%, 55%);
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.bloomberg-theme .monte-carlo-description {
+  color: hsl(0, 0%, 70%);
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.bloomberg-theme .monte-carlo-button {
+  background-color: hsl(25, 100%, 55%);
+  color: white;
+  border: none;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  font-family: 'Roboto', sans-serif;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.bloomberg-theme .monte-carlo-button:hover {
+  background-color: hsl(25, 100%, 50%);
+}
+
+.bloomberg-theme .visualization-container {
+  background-color: hsl(220, 13%, 15%);
+  border: 1px solid hsl(220, 13%, 25%);
+  border-radius: 0.35rem;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.bloomberg-theme .visualization-message {
+  color: hsl(0, 0%, 70%);
+  font-size: 0.875rem;
+  font-family: 'Roboto Mono', monospace;
+}
+
+/* Style pour le bouton Calculate Strategy Results */
+.bloomberg-theme .calculate-button {
+  background-color: hsl(25, 100%, 55%);
+  color: white;
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 0.35rem;
+  width: 100%;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.bloomberg-theme .calculate-button:hover {
+  background-color: hsl(25, 100%, 50%);
+} 

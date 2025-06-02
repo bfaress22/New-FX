@@ -81,10 +81,13 @@ export interface StressTestScenario {
 }
 
 export interface StrategyComponent {
-  type: 'call' | 'put' | 'swap' | 'forward' | 'call-knockout' | 'call-reverse-knockout' | 'call-double-knockout' | 
+  type: 'call' | 'put' | 'swap' | 'forward' | 
+         'call-knockout' | 'call-reverse-knockout' | 'call-double-knockout' | 
          'put-knockout' | 'put-reverse-knockout' | 'put-double-knockout' | 
          'call-knockin' | 'call-reverse-knockin' | 'call-double-knockin' |
-         'put-knockin' | 'put-reverse-knockin' | 'put-double-knockin';
+         'put-knockin' | 'put-reverse-knockin' | 'put-double-knockin' |
+         'one-touch' | 'double-touch' | 'no-touch' | 'double-no-touch' |
+         'range-binary' | 'outside-binary';
   strike: number;
   strikeType: 'percent' | 'absolute';
   volatility: number;
@@ -92,6 +95,8 @@ export interface StrategyComponent {
   barrier?: number;           // Primary barrier level
   secondBarrier?: number;     // Secondary barrier for double barriers
   barrierType?: 'percent' | 'absolute';  // Whether barrier is % of spot or absolute value
+  rebate?: number;            // Rebate amount for digital options
+  timeToPayoff?: number;      // Time to payoff for one-touch options (in years)
 }
 
 export interface Result {
@@ -838,6 +843,79 @@ const Index = () => {
     return Math.max(0, optionPrice);
   };
 
+  // Digital option Monte Carlo pricing
+  const calculateDigitalOptionPrice = (
+    optionType: string,
+    S: number,      // Current price
+    K: number,      // Strike/Barrier level
+    r: number,      // Risk-free rate
+    t: number,      // Time to maturity
+    sigma: number,  // Volatility
+    barrier?: number,
+    secondBarrier?: number,
+    numSimulations: number = 10000,
+    rebate: number = 1
+  ) => {
+    // Facteur d'échelle pour rendre les prix des options digitales plus réalistes
+    // Les options digitales ont tendance à être sous-évaluées avec la méthode Monte Carlo simple
+    
+    
+    let payoutSum = 0;
+    const dt = t / 252;
+    for (let sim = 0; sim < numSimulations; sim++) {
+      let price = S;
+      let touched = false;
+      let touchedSecond = false;
+      for (let day = 0; day < 252; day++) {
+        const z = Math.sqrt(-2 * Math.log(Math.random())) * Math.cos(2 * Math.PI * Math.random());
+        price = price * Math.exp((r - 0.5 * sigma * sigma) * dt + sigma * Math.sqrt(dt) * z);
+        switch (optionType) {
+          case 'one-touch':
+            if (barrier !== undefined && price >= barrier) touched = true;
+            break;
+          case 'no-touch':
+            if (barrier !== undefined && price >= barrier) touched = true;
+            break;
+          case 'double-touch':
+            if (barrier !== undefined && price >= barrier) touched = true;
+            if (secondBarrier !== undefined && price <= secondBarrier) touchedSecond = true;
+            break;
+          case 'double-no-touch':
+            if ((barrier !== undefined && price >= barrier) || (secondBarrier !== undefined && price <= secondBarrier)) touched = true;
+            break;
+          case 'range-binary':
+            if (barrier !== undefined && K !== undefined && price >= K && price <= barrier) touched = true;
+            break;
+          case 'outside-binary':
+            if (barrier !== undefined && K !== undefined && (price <= K || price >= barrier)) touched = true;
+            break;
+        }
+      }
+      switch (optionType) {
+        case 'one-touch':
+          if (touched) payoutSum += rebate;
+          break;
+        case 'no-touch':
+          if (!touched) payoutSum += rebate;
+          break;
+        case 'double-touch':
+          if (touched && touchedSecond) payoutSum += rebate;
+          break;
+        case 'double-no-touch':
+          if (!touched) payoutSum += rebate;
+          break;
+        case 'range-binary':
+          if (touched) payoutSum += rebate;
+          break;
+        case 'outside-binary':
+          if (touched) payoutSum += rebate;
+          break;
+      }
+    }
+    // Appliquer le facteur d'échelle pour obtenir un prix d'option plus réaliste
+    return Math.exp(-r * t) * (payoutSum / numSimulations) * 100;
+  };
+
   // Modify the calculateOptionPrice function to handle barrier options
   // FX Forward Pricing Model
   const calculateFXForwardPrice = (S: number, r_d: number, r_f: number, t: number) => {
@@ -957,6 +1035,37 @@ const Index = () => {
           barrierOptionSimulations // Use the number of simulations specific to barrier options
         ));
       }
+    }
+    
+    // Digital Options Calculations
+    if (type.includes('one-touch') || type.includes('no-touch') || 
+        type.includes('double-touch') || type.includes('double-no-touch') ||
+        type.includes('range-binary') || type.includes('outside-binary')) {
+      // Find the option in the strategy to get digital params
+      const option = strategy.find(opt => opt.type === type);
+      if (!option) return 0;
+      const barrier = option.barrierType === 'percent' ? 
+        params.spotPrice * (option.barrier / 100) : 
+        option.barrier;
+      const secondBarrier = option.type.includes('double') ? 
+        (option.barrierType === 'percent' ? 
+          params.spotPrice * (option.secondBarrier / 100) : 
+          option.secondBarrier) : 
+        undefined;
+      const rebate = option.rebate !== undefined ? option.rebate : 1;
+      const numSimulations = barrierOptionSimulations || 10000;
+      return calculateDigitalOptionPrice(
+        type,
+        S,
+        K,
+        r,
+        t,
+        effectiveSigma,
+        barrier,
+        secondBarrier,
+        numSimulations,
+        rebate
+      );
     }
     
     // For standard options, use appropriate pricing model
@@ -1797,6 +1906,18 @@ const Index = () => {
                   optionLabel = `Put KI ${optIndex + 1}`;
                 }
               }
+            } else if (option.type.includes('one-touch')) {
+              optionLabel = `One Touch ${optIndex + 1}`;
+            } else if (option.type.includes('no-touch')) {
+              optionLabel = `No Touch ${optIndex + 1}`;
+            } else if (option.type.includes('double-touch')) {
+              optionLabel = `Double Touch ${optIndex + 1}`;
+            } else if (option.type.includes('double-no-touch')) {
+              optionLabel = `Double No Touch ${optIndex + 1}`;
+            } else if (option.type.includes('range-binary')) {
+              optionLabel = `Range Binary ${optIndex + 1}`;
+            } else if (option.type.includes('outside-binary')) {
+              optionLabel = `Outside Binary ${optIndex + 1}`;
             }
             
         // Calculate option price differently based on type
@@ -1806,7 +1927,7 @@ const Index = () => {
         const optionId = `${option.type}-${optIndex}`;
         const isKnockedOut = option.type.includes('knockout') && barrierCrossings[optionId] && barrierCrossings[optionId][i];
         
-        // Pour les options knockout, nous calculons toujours le prix même si l'option est knocked out
+        // Pour les options knocked out, nous calculons toujours le prix même si l'option est knocked out
         // Le prix représente la valeur théorique de l'option, indépendamment de son état knocked out
         if (option.type === 'forward') {
           // For forwards, the value is simply the difference between forward rate and strike
@@ -1925,6 +2046,37 @@ const Index = () => {
             secondBarrier
           );
           }
+        } else if (
+          option.type.includes('one-touch') ||
+          option.type.includes('double-touch') ||
+          option.type.includes('no-touch') ||
+          option.type.includes('double-no-touch') ||
+          option.type.includes('range-binary') ||
+          option.type.includes('outside-binary')
+        ) {
+          // Calculer la barrière principale
+          const barrier = option.barrierType === 'percent'
+            ? params.spotPrice * (option.barrier / 100)
+            : option.barrier;
+          // Calculer la seconde barrière si besoin
+          const secondBarrier = option.type.includes('double')
+            ? (option.barrierType === 'percent'
+                ? params.spotPrice * (option.secondBarrier / 100)
+                : option.secondBarrier)
+            : undefined;
+          // Calculer le prix digital
+          price = calculateDigitalOptionPrice(
+            option.type,
+            params.spotPrice,
+            strike,
+            params.domesticRate / 100,
+            t,
+            option.volatility / 100,
+            barrier,
+            secondBarrier,
+            10000, // nombre de simulations
+            option.rebate ?? 1
+          );
         }
             
         return {
@@ -2041,6 +2193,58 @@ const Index = () => {
           payoff = Math.max(0, opt.strike - realPrice);
           } else if (opt.type === 'swap') {
           payoff = forward - realPrice;
+          } else if (
+            opt.type.includes('one-touch') ||
+            opt.type.includes('double-touch') ||
+            opt.type.includes('no-touch') ||
+            opt.type.includes('double-no-touch') ||
+            opt.type.includes('range-binary') ||
+            opt.type.includes('outside-binary')
+          ) {
+            // Pour les options digitales, calculer le payoff réel (rebate ou 0)
+            const option = strategy.find(s => s.type === opt.type);
+            if (!option) return sum;
+            
+            // Récupérer les barrières et le rebate
+            const barrier = option.barrierType === 'percent' ? 
+              params.spotPrice * (option.barrier / 100) : 
+              option.barrier;
+              
+            const secondBarrier = option.type.includes('double') ? 
+              (option.barrierType === 'percent' ? 
+                params.spotPrice * (option.secondBarrier / 100) : 
+                option.secondBarrier) : 
+              undefined;
+            
+            const rebate = option.rebate ?? 1;
+            
+            // Vérifier si la condition est atteinte en fonction du type d'option
+            let conditionAtteinte = false;
+            
+            if (opt.type.includes('one-touch')) {
+              conditionAtteinte = realPrice >= barrier;
+            } else if (opt.type.includes('no-touch')) {
+              conditionAtteinte = realPrice < barrier;
+            } else if (opt.type.includes('double-touch')) {
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              conditionAtteinte = (realPrice >= upperBarrier || realPrice <= lowerBarrier);
+            } else if (opt.type.includes('double-no-touch')) {
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              conditionAtteinte = (realPrice < upperBarrier && realPrice > lowerBarrier);
+            } else if (opt.type.includes('range-binary')) {
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              conditionAtteinte = (realPrice <= upperBarrier && realPrice >= lowerBarrier);
+            } else if (opt.type.includes('outside-binary')) {
+              const upperBarrier = Math.max(barrier, secondBarrier || 0);
+              const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
+              conditionAtteinte = (realPrice > upperBarrier || realPrice < lowerBarrier);
+            }
+            
+            // Attribuer le rebate ou 0 en fonction de la condition
+            payoff = conditionAtteinte ? ((rebate / 100) * monthlyVolume) : 0;
           }
           
             return sum + (payoff * opt.quantity);
@@ -5226,6 +5430,12 @@ const Index = () => {
                         <option value="put-knockin">Put Knock-In</option>
                         <option value="put-reverse-knockin">Put Reverse Knock-In</option>
                         <option value="put-double-knockin">Put Double Knock-In</option>
+                        <option value="one-touch">One Touch (beta) </option>
+                        <option value="double-touch">Double Touch (beta) </option>
+                        <option value="no-touch">No Touch (beta)</option>
+                        <option value="double-no-touch">Double No Touch (beta)</option>
+                        <option value="range-binary">Range Binary (beta)</option>
+                        <option value="outside-binary">Outside Binary (beta)</option>
                       </select>
                     </div>
                     {component.type === 'swap' ? (
@@ -5350,6 +5560,50 @@ const Index = () => {
                     </div>
                       </>
                     )}
+                    {['one-touch','double-touch','no-touch','double-no-touch','range-binary','outside-binary'].includes(component.type) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Rebate (%)</label>
+                          <Input
+                            type="number"
+                            value={component.rebate ?? 5}
+                            onChange={e => updateOption(index, 'rebate', Number(e.target.value))}
+                            min="0"
+                            step="0.01"
+                            placeholder="% du volume mensuel"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Barrier</label>
+                          <Input
+                            type="number"
+                            value={component.barrier ?? 0}
+                            onChange={e => updateOption(index, 'barrier', Number(e.target.value))}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Barrier Type</label>
+                          <select
+                            className="w-full p-2 border rounded"
+                            value={component.barrierType || 'percent'}
+                            onChange={e => updateOption(index, 'barrierType', e.target.value)}
+                          >
+                            <option value="percent">Percentage</option>
+                            <option value="absolute">Absolute</option>
+                          </select>
+                        </div>
+                        {['double-touch','double-no-touch','range-binary','outside-binary'].includes(component.type) && (
+                          <div>
+                            <label className="block text-sm font-medium mb-1">Second Barrier</label>
+                            <Input
+                              type="number"
+                              value={component.secondBarrier ?? 0}
+                              onChange={e => updateOption(index, 'secondBarrier', Number(e.target.value))}
+                            />
+                          </div>
+                        )}
+                      </>
+                    )}
                     <div className="flex items-end">
                       <Button
                         variant="destructive"
@@ -5416,6 +5670,12 @@ const Index = () => {
                         <option value="put-knockin">Put Knock-In</option>
                         <option value="put-reverse-knockin">Put Reverse Knock-In</option>
                         <option value="put-double-knockin">Put Double Knock-In</option>
+                        <option value="one-touch">One Touch</option>
+                        <option value="double-touch">Double Touch</option>
+                        <option value="no-touch">No Touch</option>
+                        <option value="double-no-touch">Double No Touch</option>
+                        <option value="range-binary">Range Binary</option>
+                        <option value="outside-binary">Outside Binary</option>
                       </select>
                     </div>
                     <div>
@@ -6163,9 +6423,9 @@ const Index = () => {
                             if (value > 0) return 'text-green-600';
                             if (value < 0) return 'text-red-600';
                             return '';
-                          };
-                          
-                      return (
+  };
+
+  return (
                             <tr key={i} className={`${isEven ? 'bg-muted/20' : 'bg-background'} hover:bg-muted/40 transition-colors`}>
                               <td className="px-3 py-2 text-sm border-b border-border/30">{row.date}</td>
                               <td className="px-3 py-2 text-sm border-b border-border/30">{row.timeToMaturity.toFixed(4)}</td>
@@ -6752,4 +7012,4 @@ const Index = () => {
   );
 };
 
-export default Index; 
+export default Index;

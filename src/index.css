@@ -5,87 +5,86 @@
 
 @layer base {
   :root {
-    --background: 220 15% 8%; /* quasi noir */
-    --foreground: 0 0% 98%; /* blanc/gris très clair */
+    --background: 220 33% 98%;
+    --foreground: 222 47% 10%;
 
-    --card: 220 15% 10%;
-    --card-foreground: 0 0% 98%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
 
-    --popover: 220 15% 12%;
-    --popover-foreground: 0 0% 98%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
 
-    --primary: 44 100% 50%; /* jaune/orange Bloomberg #FFB800 */
-    --primary-foreground: 0 0% 10%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
 
-    --secondary: 220 15% 18%;
-    --secondary-foreground: 0 0% 98%;
+    --secondary: 214 32% 91%;
+    --secondary-foreground: 222 47% 11%;
 
-    --muted: 220 15% 16%;
-    --muted-foreground: 0 0% 70%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
 
-    --accent: 220 100% 60%; /* bleu Bloomberg #1A73E8 */
-    --accent-foreground: 0 0% 98%;
+    --accent: 221 83% 53%;
+    --accent-foreground: 210 40% 98%;
 
-    --destructive: 350 100% 60%; /* rouge vif #FF2D55 */
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
 
-    --success: 135 100% 40%; /* vert vif #00FF41 */
-    --success-foreground: 0 0% 10%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221 83% 53%;
 
-    --border: 220 15% 20%;
-    --input: 220 15% 20%;
-    --ring: 44 100% 50%;
+    --radius: 0.75rem;
 
-    --radius: 0.5rem;
+    --sidebar-background: 224 71% 4%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 221 83% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217.2 32.6% 17.5%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 217.2 32.6% 17.5%;
+    --sidebar-ring: 221 83% 53%;
 
-    --sidebar-background: 220 15% 8%;
-    --sidebar-foreground: 0 0% 98%;
-    --sidebar-primary: 44 100% 50%;
-    --sidebar-primary-foreground: 0 0% 10%;
-    --sidebar-accent: 220 15% 18%;
-    --sidebar-accent-foreground: 0 0% 98%;
-    --sidebar-border: 220 15% 18%;
-    --sidebar-ring: 44 100% 50%;
-
-    --font-sans: 'Inter', 'Roboto', Arial, Helvetica, sans-serif;
-  }
-
-  /* Forcer le mode sombre par défaut */
-  html, body, .dark {
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
+    /* Typography settings */
+    --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   }
 
   .dark {
-    --background: 220 15% 8%;
-    --foreground: 0 0% 98%;
-    --card: 220 15% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 220 15% 12%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 44 100% 50%;
-    --primary-foreground: 0 0% 10%;
-    --secondary: 220 15% 18%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 220 15% 16%;
-    --muted-foreground: 0 0% 70%;
-    --accent: 220 100% 60%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 350 100% 60%;
-    --destructive-foreground: 0 0% 98%;
-    --success: 135 100% 40%;
-    --success-foreground: 0 0% 10%;
-    --border: 220 15% 20%;
-    --input: 220 15% 20%;
-    --ring: 44 100% 50%;
-    --sidebar-background: 220 15% 8%;
-    --sidebar-foreground: 0 0% 98%;
-    --sidebar-primary: 44 100% 50%;
-    --sidebar-primary-foreground: 0 0% 10%;
-    --sidebar-accent: 220 15% 18%;
-    --sidebar-accent-foreground: 0 0% 98%;
-    --sidebar-border: 220 15% 18%;
-    --sidebar-ring: 44 100% 50%;
+    --background: 224 71% 4%;
+    --foreground: 213 31% 91%;
+
+    --card: 224 71% 6%;
+    --card-foreground: 213 31% 91%;
+
+    --popover: 224 71% 6%;
+    --popover-foreground: 213 31% 91%;
+
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 221 83% 53%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 221 83% 53%;
+    
+    --sidebar-background: 224 71% 4%;
+    --sidebar-foreground: 213 31% 91%;
+    --sidebar-primary: 221 83% 53%;
+    --sidebar-primary-foreground: 210 40% 98%;
+    --sidebar-accent: 217.2 32.6% 17.5%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 217.2 32.6% 17.5%;
+    --sidebar-ring: 221 83% 53%;
   }
 }
 
@@ -101,13 +100,14 @@
   }
 
   h1, h2, h3, h4, h5, h6 {
-    font-weight: 700;
+    font-weight: 600;
     line-height: 1.2;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
   }
-  h1 { font-size: 2.5rem; color: #FFB800; }
-  h2 { font-size: 2rem; color: #FFB800; }
-  h3 { font-size: 1.5rem; color: #FFB800; }
+  
+  h1 { font-size: 2.25rem; }
+  h2 { font-size: 1.875rem; }
+  h3 { font-size: 1.5rem; }
   h4 { font-size: 1.25rem; }
   h5 { font-size: 1.125rem; }
   h6 { font-size: 1rem; }
@@ -115,128 +115,43 @@
 
 @layer components {
   .card {
-    @apply rounded-lg border border-border bg-card shadow-none;
+    @apply rounded-xl shadow-sm border border-border bg-card;
   }
+  
   .compact-form-group {
     @apply flex flex-col space-y-1;
   }
+  
   .compact-label {
     @apply text-xs font-medium text-foreground/80;
   }
+  
   .compact-input {
-    @apply h-9 rounded-md text-sm bg-background text-foreground border border-border;
+    @apply h-9 rounded-md text-sm;
   }
+  
   .compact-select {
-    @apply h-9 text-sm rounded-md bg-background text-foreground border border-border;
+    @apply h-9 text-sm rounded-md;
   }
+
+  /* Styles personnalisés pour les barres de défilement */
   .custom-scrollbar {
     @apply overflow-x-auto;
   }
+
   .custom-scrollbar::-webkit-scrollbar {
     height: 8px;
   }
+
   .custom-scrollbar::-webkit-scrollbar-track {
     @apply bg-transparent rounded-full;
   }
+
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    @apply bg-primary/40 rounded-full;
+    @apply bg-primary/20 rounded-full;
   }
+
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    @apply bg-primary/60;
-  }
-  /* Style Bloomberg pour les boutons */
-  .btn, button, .shadcn-btn, .shadcn-button {
-    background: hsl(var(--card));
-    color: #FFB800;
-    border: 1.5px solid #FFB800;
-    border-radius: 0.25rem;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    transition: background 0.2s, color 0.2s, border 0.2s;
-  }
-  .btn:hover, button:hover, .shadcn-btn:hover, .shadcn-button:hover {
-    background: #FFB800;
-    color: #181818;
-    border-color: #FFB800;
-  }
-  /* Tableaux Bloomberg */
-  table {
-    background: hsl(var(--card));
-    color: hsl(var(--foreground));
-    border-collapse: collapse;
-    font-size: 0.98rem;
-  }
-  th, td {
-    border: 1px solid #333;
-    padding: 0.4em 0.7em;
-  }
-  th {
-    background: #181818;
-    color: #FFB800;
-    font-weight: 700;
-    letter-spacing: 0.01em;
-  }
-  tr:nth-child(even) td {
-    background: #232323;
-  }
-  tr:hover td {
-    background: #222;
-    color: #FFB800;
-  }
-  /* Style Bloomberg pour les menus déroulants */
-  select, .select, .dropdown, .shadcn-select, .shadcn-dropdown {
-    background: #181818;
-    color: #FFB800;
-    border: 1.5px solid #FFB800;
-    border-radius: 0.25rem;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    transition: background 0.2s, color 0.2s, border 0.2s;
-    min-width: 120px;
-    box-shadow: none;
-  }
-  select:focus, .select:focus, .dropdown:focus, .shadcn-select:focus, .shadcn-dropdown:focus {
-    outline: none;
-    border-color: #FFB800;
-    box-shadow: 0 0 0 2px #FFB80044;
-  }
-  option, .select-option, .dropdown-option {
-    background: #181818;
-    color: #FFB800;
-    font-weight: 600;
-    border: none;
-  }
-  option:disabled, .select-option:disabled, .dropdown-option:disabled {
-    color: #888;
-    background: #232323;
-    cursor: not-allowed;
-  }
-  option:hover, .select-option:hover, .dropdown-option:hover, .select [aria-selected="true"], .dropdown [aria-selected="true"] {
-    background: #FFB800;
-    color: #181818;
-  }
-  /* Pour les menus custom type shadcn/ui */
-  .shadcn-select-content, .shadcn-dropdown-content {
-    background: #181818 !important;
-    color: #FFB800 !important;
-    border: 1.5px solid #FFB800 !important;
-    border-radius: 0.25rem;
-    box-shadow: 0 4px 24px #000a;
-  }
-  .shadcn-select-item, .shadcn-dropdown-item {
-    background: #181818 !important;
-    color: #FFB800 !important;
-    font-weight: 600;
-    border: none;
-    transition: background 0.2s, color 0.2s;
-  }
-  .shadcn-select-item[aria-selected="true"], .shadcn-dropdown-item[aria-selected="true"] {
-    background: #FFB800 !important;
-    color: #181818 !important;
-  }
-  .shadcn-select-item[aria-disabled="true"], .shadcn-dropdown-item[aria-disabled="true"] {
-    color: #888 !important;
-    background: #232323 !important;
-    cursor: not-allowed;
+    @apply bg-primary/30;
   }
 }

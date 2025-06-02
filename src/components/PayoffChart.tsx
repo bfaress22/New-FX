@@ -14,6 +14,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { BloombergChart } from "./BloombergChart";
+import { useThemeContext } from "@/hooks/ThemeProvider";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface PayoffChartProps {
   data: Array<{ price: number; payoff: number }>;
@@ -153,6 +156,86 @@ const generateFXHedgingData = (strategy: any[], spot: number, includePremium: bo
           }
         }
       }
+      else if (option.type.includes('one-touch')) {
+        const barrier = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        
+        // Appliquer le rebate en % du volume mensuel au lieu d'une valeur fixe
+        // La quantité représente le % du volume total qui est couvert
+        if (currentSpot >= barrier) {
+          // Utiliser rebate comme pourcentage du volume (que la quantité couvre déjà)
+          const rebateAmount = ((option.rebate || 5) / 100) * Math.abs(quantity) * 100;
+          hedgedRate = currentSpot + rebateAmount;
+        }
+      }
+      else if (option.type.includes('no-touch')) {
+        const barrier = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        
+        if (currentSpot < barrier) {
+          // Utiliser rebate comme pourcentage du volume
+          const rebateAmount = ((option.rebate || 5) / 100) * Math.abs(quantity) * 100;
+          hedgedRate = currentSpot + rebateAmount;
+        }
+      }
+      else if (option.type.includes('double-touch')) {
+        const barrier1 = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        const barrier2 = option.barrierType === 'percent' 
+          ? spot * (option.secondBarrier / 100) 
+          : option.secondBarrier;
+        
+        if (currentSpot >= barrier1 || currentSpot <= barrier2) {
+          // Utiliser rebate comme pourcentage du volume
+          const rebateAmount = ((option.rebate || 5) / 100) * Math.abs(quantity) * 100;
+          hedgedRate = currentSpot + rebateAmount;
+        }
+      }
+      else if (option.type.includes('double-no-touch')) {
+        const barrier1 = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        const barrier2 = option.barrierType === 'percent' 
+          ? spot * (option.secondBarrier / 100) 
+          : option.secondBarrier;
+        
+        if (currentSpot < barrier1 && currentSpot > barrier2) {
+          // Utiliser rebate comme pourcentage du volume
+          const rebateAmount = ((option.rebate || 5) / 100) * Math.abs(quantity) * 100;
+          hedgedRate = currentSpot + rebateAmount;
+        }
+      }
+      else if (option.type === 'range-binary') {
+        const upperBound = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        const lowerBound = option.strikeType === 'percent'
+          ? spot * (option.strike / 100)
+          : option.strike;
+        
+        if (currentSpot <= upperBound && currentSpot >= lowerBound) {
+          // Utiliser rebate comme pourcentage du volume
+          const rebateAmount = ((option.rebate || 5) / 100) * Math.abs(quantity) * 100;
+          hedgedRate = currentSpot + rebateAmount;
+        }
+      }
+      else if (option.type === 'outside-binary') {
+        const upperBound = option.barrierType === 'percent' 
+          ? spot * (option.barrier / 100) 
+          : option.barrier;
+        const lowerBound = option.strikeType === 'percent'
+          ? spot * (option.strike / 100)
+          : option.strike;
+        
+        if (currentSpot > upperBound || currentSpot < lowerBound) {
+          // Utiliser rebate comme pourcentage du volume
+          const rebateAmount = ((option.rebate || 5) / 100) * Math.abs(quantity) * 100;
+          hedgedRate = currentSpot + rebateAmount;
+        }
+      }
       
       // Ajuster pour la prime avec le signe correct selon achat/vente
       if (quantity > 0) {
@@ -227,13 +310,13 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
   includePremium = false,
   className = ""
 }) => {
-  const [showPremium, setShowPremium] = useState(includePremium);
-  const [showRiskMetrics, setShowRiskMetrics] = useState(true);
+  const [activeTab, setActiveTab] = useState<"payoff" | "hedging">("payoff");
+  const { theme } = useThemeContext();
+  const isBloombergTheme = theme === 'bloomberg';
   
-  // Generate FX hedging data instead of using the passed data
-  const chartData = useMemo(() => {
-    return generateFXHedgingData(strategy, spot, showPremium);
-  }, [strategy, spot, showPremium]);
+  const fxHedgingData = useMemo(() => {
+    return generateFXHedgingData(strategy, spot, includePremium);
+  }, [strategy, spot, includePremium]);
   
   // Get strategy type for display
   const getStrategyName = () => {
@@ -320,251 +403,229 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
     return lines;
   };
 
-  const strategyName = getStrategyName();
-
-  // Calculate hedging effectiveness metrics
-  const hedgingMetrics = useMemo(() => {
-    if (chartData.length === 0) return null;
-    
-    const protectedPoints = chartData.filter(d => 
-      Math.abs(d.hedgedRate - d.unhedgedRate) > 0.0001
-    );
-    
-    const maxProtection = Math.max(...chartData.map(d => d.hedgedRate - d.unhedgedRate));
-    const minProtection = Math.min(...chartData.map(d => d.hedgedRate - d.unhedgedRate));
-    
-    const protectionEffectiveness = protectedPoints.length / chartData.length * 100;
-    
-    return {
-      protectionEffectiveness,
-      maxProtection,
-      minProtection,
-      protectedPoints: protectedPoints.length
-    };
-  }, [chartData]);
-
-  if (strategy.length === 0) {
+  // Si le thème Bloomberg est activé, utiliser le BloombergChart spécialisé
+  if (isBloombergTheme) {
     return (
-      <Card className={className}>
-        <CardHeader>
-          <CardTitle>FX Hedging Profile</CardTitle>
+      <Card className={`${className} bloomberg-theme`}>
+        <CardHeader className="pb-2 border-b">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-xl font-semibold text-orange-500">
+              {activeTab === "payoff" ? "PAYOFF CHART" : "FX HEDGING PROFILE"}
+            </CardTitle>
+            <Tabs 
+              value={activeTab} 
+              onValueChange={(value) => setActiveTab(value as "payoff" | "hedging")}
+              className="ml-auto"
+            >
+              <TabsList className="bg-secondary">
+                <TabsTrigger value="payoff" className="text-sm">Payoff</TabsTrigger>
+                <TabsTrigger value="hedging" className="text-sm">FX Hedging</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+          <div className="text-sm text-muted-foreground mt-1 font-mono">
+            {getStrategyName()}
+          </div>
         </CardHeader>
-        <CardContent>
-          <p className="text-center text-muted-foreground py-8">
-            Add hedging instruments to view the protection profile
-          </p>
+        <CardContent className="pt-4 px-2">
+          {activeTab === "payoff" ? (
+            <BloombergChart 
+              data={data}
+              spotPrice={spot}
+              title="Payoff Chart"
+              height={400}
+            />
+          ) : (
+            <ResponsiveContainer width="100%" height={400}>
+              <LineChart 
+                data={fxHedgingData}
+                margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                style={{ backgroundColor: '#101418', borderRadius: '4px' }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a3039" />
+                <XAxis 
+                  dataKey="spot"
+                  domain={["dataMin", "dataMax"]}
+                  tick={{ fill: '#aaa' }}
+                  tickLine={{ stroke: '#aaa' }}
+                  axisLine={{ stroke: '#aaa' }}
+                  label={{
+                    value: 'Spot Rate',
+                    position: 'insideBottom',
+                    offset: -5,
+                    style: {
+                      fill: '#aaa',
+                      fontFamily: '"Roboto Mono", monospace',
+                      fontSize: '12px'
+                    }
+                  }}
+                />
+                <YAxis 
+                  tick={{ fill: '#aaa' }}
+                  tickLine={{ stroke: '#aaa' }}
+                  axisLine={{ stroke: '#aaa' }}
+                  label={{
+                    value: 'Effective Rate',
+                    angle: -90,
+                    position: 'insideLeft',
+                    style: {
+                      fill: '#aaa',
+                      fontFamily: '"Roboto Mono", monospace',
+                      fontSize: '12px'
+                    }
+                  }}
+                />
+                <Tooltip 
+                  content={<CustomTooltip currencyPair={currencyPair} />}
+                />
+                <Legend 
+                  wrapperStyle={{
+                    fontFamily: '"Roboto Mono", monospace',
+                    fontSize: '12px',
+                    color: '#aaa'
+                  }}
+                />
+                <ReferenceLine
+                  x={spot}
+                  stroke="#21a621"
+                  strokeDasharray="3 3"
+                  label={{
+                    value: `Spot: ${spot.toFixed(2)}`,
+                    position: 'top',
+                    fill: '#21a621',
+                    fontSize: '10px',
+                    fontFamily: '"Roboto Mono", monospace'
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="unhedgedRate"
+                  stroke="#777"
+                  strokeWidth={2}
+                  strokeDasharray="4 4"
+                  dot={false}
+                  name="Unhedged Rate"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="hedgedRate"
+                  stroke="#ffa500"
+                  strokeWidth={3}
+                  dot={false}
+                  activeDot={{ r: 6, stroke: '#ffa500', strokeWidth: 2, fill: '#101418' }}
+                  name="Hedged Rate"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </CardContent>
       </Card>
     );
   }
 
+  // Sinon, utiliser le chart standard existant
   return (
     <Card className={className}>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between">
-          <span>FX Hedging Profile</span>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center space-x-2">
-              <Switch 
-                id="show-premium" 
-                checked={showPremium} 
-                onCheckedChange={setShowPremium}
-              />
-              <Label htmlFor="show-premium" className="text-sm">Include Premium Cost</Label>
-            </div>
-            <span className="text-sm font-normal text-muted-foreground">
-              {strategyName}
-            </span>
-          </div>
+      <CardHeader className="pb-2 border-b">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-xl font-semibold">
+            {activeTab === "payoff" ? "Payoff Chart" : "FX Hedging Profile"}
         </CardTitle>
-        <div className="text-sm text-muted-foreground space-y-2">
-          <p>Compare hedged vs unhedged {currencyPair?.symbol || 'FX'} rates across different market scenarios</p>
-          
-          {/* Quick metrics row */}
-          {hedgingMetrics && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-            <div className="text-center p-2 bg-green-50 rounded border">
-                <div className="font-medium text-green-700">Max Protection</div>
-                <div className="text-green-600 font-semibold">{hedgingMetrics.maxProtection.toFixed(4)}</div>
+          <Tabs 
+            value={activeTab} 
+            onValueChange={(value) => setActiveTab(value as "payoff" | "hedging")}
+            className="ml-auto"
+          >
+            <TabsList>
+              <TabsTrigger value="payoff">Payoff</TabsTrigger>
+              <TabsTrigger value="hedging">FX Hedging</TabsTrigger>
+            </TabsList>
+          </Tabs>
             </div>
-            <div className="text-center p-2 bg-red-50 rounded border">
-                <div className="font-medium text-red-700">Max Cost</div>
-                <div className="text-red-600 font-semibold">{Math.abs(hedgingMetrics.minProtection).toFixed(4)}</div>
-            </div>
-              <div className="text-center p-2 bg-blue-50 rounded border">
-                <div className="font-medium text-blue-700">Protection Range</div>
-                <div className="text-blue-600 font-semibold">{hedgingMetrics.protectionEffectiveness.toFixed(1)}%</div>
-              </div>
-            <div className="text-center p-2 bg-gray-50 rounded border">
-                <div className="font-medium text-gray-700">Current Spot</div>
-                <div className="text-gray-600 font-semibold">{spot.toFixed(4)}</div>
-              </div>
-            </div>
-          )}
-          
-          {/* Risk metrics toggle */}
-          <div className="flex items-center space-x-2">
-            <Switch 
-              id="show-metrics" 
-              checked={showRiskMetrics} 
-              onCheckedChange={setShowRiskMetrics}
-            />
-            <Label htmlFor="show-metrics" className="text-xs">Show detailed hedging analysis</Label>
-          </div>
+        <div className="text-sm text-muted-foreground mt-1">
+          {getStrategyName()}
         </div>
       </CardHeader>
-      <CardContent>
-        <div style={{ height: "400px", background: "#111", borderRadius: 12, padding: 8 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart 
-              data={chartData} 
-              margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" opacity={0.7} />
+      <CardContent className="pt-4 px-2">
+        {activeTab === "payoff" ? (
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" />
               <XAxis
-                dataKey="spot"
-                domain={["dataMin", "dataMax"]}
-                tickFormatter={(value) => value.toFixed(3)}
-                stroke="#EEE"
-                tick={{ fill: '#EEE', fontWeight: 600 }}
+                dataKey="price" 
+                label={{ value: 'Price', position: 'insideBottomRight', offset: -5 }}
+              />
+              <YAxis 
                 label={{
-                  value: `${currencyPair?.symbol || 'FX'} Rate`,
-                  position: "insideBottom",
-                  offset: -10,
-                  fill: '#FFB800',
-                  fontWeight: 700
+                  value: 'Profit/Loss', 
+                  angle: -90, 
+                  position: 'insideLeft',
+                  style: { textAnchor: 'middle' }
                 }}
+              />
+              <Tooltip content={<CustomTooltip currencyPair={currencyPair} />} />
+              <Legend />
+              {getReferenceLines()}
+              <Line
+                type="monotone"
+                dataKey="payoff"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                dot={false}
+                name="Profit/Loss"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={fxHedgingData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis 
+                dataKey="spot" 
+                label={{ value: 'Spot Rate', position: 'insideBottomRight', offset: -5 }}
               />
               <YAxis
-                tickFormatter={(value) => value.toFixed(3)}
-                stroke="#EEE"
-                tick={{ fill: '#EEE', fontWeight: 600 }}
                 label={{
-                  value: `Effective Rate (${currencyPair?.quote || 'Quote Currency'})`,
+                  value: 'Effective Rate', 
                   angle: -90,
-                  position: "insideLeft",
-                  fill: '#FFB800',
-                  fontWeight: 700
+                  position: 'insideLeft',
+                  style: { textAnchor: 'middle' }
                 }}
               />
-              <Tooltip
-                content={<CustomTooltip currencyPair={currencyPair} />}
-                wrapperStyle={{ background: '#181818', border: '1.5px solid #FFB800', borderRadius: 8, color: '#FFB800' }}
-                contentStyle={{ background: '#181818', color: '#FFB800', border: 'none' }}
-                labelStyle={{ color: '#FFB800', fontWeight: 700 }}
-                itemStyle={{ color: '#FFB800' }}
+              <Tooltip content={<CustomTooltip currencyPair={currencyPair} />} />
+              <Legend />
+              <ReferenceLine
+                x={spot}
+                stroke="#6B7280"
+                strokeDasharray="3 3"
+                label={{
+                  value: `Current Spot: ${spot.toFixed(4)}`,
+                  position: 'top',
+                  fill: "#6B7280",
+                  fontSize: 12,
+                }}
               />
-              <Legend 
-                verticalAlign="top" 
-                height={36}
-                wrapperStyle={{ color: '#FFB800' }}
-              />
-              {/* Unhedged rate line (reference) */}
               <Line
                 type="monotone"
                 dataKey="unhedgedRate"
-                stroke="#B0B0B0"
+                stroke="#9CA3AF"
                 strokeWidth={2}
                 strokeDasharray="4 4"
                 dot={false}
                 name="Unhedged Rate"
               />
-              {/* Hedged rate line */}
               <Line
                 type="monotone"
                 dataKey="hedgedRate"
-                stroke="#FFB800"
+                stroke="#3B82F6"
                 strokeWidth={3}
                 dot={false}
-                activeDot={{ r: 6, fill: "#FFB800" }}
-                name={`Hedged Rate${showPremium ? ' (net of premium)' : ' (excluding premium)'}`}
+                activeDot={{ r: 6, fill: "#3B82F6" }}
+                name="Hedged Rate"
               />
-              {/* Reference lines */}
-              {getReferenceLines()}
             </LineChart>
           </ResponsiveContainer>
-        </div>
-        
-        {/* Strategy Summary */}
-        <div className="mt-4 space-y-4">
-          <div className="p-4 bg-muted/50 rounded-lg">
-            <h4 className="font-medium mb-2">Hedging Strategy Details</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-              {strategy.map((option, index) => {
-                const strike = option.strikeType === 'percent' 
-                  ? `${option.strike}% (${(spot * option.strike / 100).toFixed(4)})` 
-                  : option.strike.toFixed(4);
-                
-                const hedgingLogic = option.type === 'put' 
-                  ? (option.quantity > 0 ? '📉 Protection against rate decline (Long Put)' : '📉 Exposure to rate decline (Short Put)')
-                  : option.type === 'call'
-                  ? (option.quantity > 0 ? '📈 Protection against rate increase (Long Call)' : '📈 Exposure to rate increase (Short Call)')
-                  : option.type === 'forward'
-                  ? '🔒 Fixed rate hedging'
-                  : '💱 Rate swap';
-                
-                return (
-                  <div key={index} className="flex flex-col space-y-1 p-2 bg-background rounded border">
-                    <div className="flex justify-between items-center">
-                      <span className="font-medium">{option.type.toUpperCase()}</span>
-                      <span className="text-xs text-muted-foreground">{option.quantity}% coverage</span>
-                    </div>
-                    <div className="text-xs">Strike: {strike}</div>
-                    <div className="text-xs text-muted-foreground">{hedgingLogic}</div>
-                    {option.barrier && (
-                      <div className="text-xs text-orange-600">
-                        Barrier: {option.barrierType === 'percent' 
-                          ? `${option.barrier}% (${(spot * option.barrier / 100).toFixed(4)})` 
-                          : option.barrier.toFixed(4)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            
-            <div className="mt-3 pt-3 border-t border-border">
-                <p className="text-xs text-muted-foreground">
-                <strong>Hedging Logic:</strong> This chart shows how your hedging strategy affects the effective FX rate 
-                compared to remaining unhedged across different market scenarios.
-                </p>
-              </div>
-          </div>
-          
-          {/* Detailed hedging analysis */}
-          {showRiskMetrics && hedgingMetrics && (
-            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <h4 className="font-medium mb-3 text-blue-800">Hedging Effectiveness Analysis</h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                <div>
-                  <div className="font-medium text-blue-700">Protection Scenarios</div>
-                  <div className="text-blue-600">
-                    {hedgingMetrics.protectionEffectiveness.toFixed(1)}% of price range protected
-                  </div>
-                </div>
-                <div>
-                  <div className="font-medium text-blue-700">Maximum Benefit</div>
-                  <div className="text-blue-600">
-                    {hedgingMetrics.maxProtection.toFixed(4)} rate improvement
-                  </div>
-                </div>
-                <div>
-                  <div className="font-medium text-blue-700">Maximum Cost</div>
-                  <div className="text-blue-600">
-                    {Math.abs(hedgingMetrics.minProtection).toFixed(4)} opportunity cost
-                  </div>
-                </div>
-              </div>
-              
-                <div className="mt-3 pt-3 border-t border-blue-200">
-                <div className="text-xs text-blue-700">
-                  <strong>Interpretation:</strong> The hedged rate line shows your effective FX rate after applying the hedging strategy. 
-                  Areas where it diverges from the unhedged line indicate active protection or cost.
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </CardContent>
     </Card>
   );
