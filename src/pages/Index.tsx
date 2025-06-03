@@ -39,6 +39,9 @@ import { Switch } from "@/components/ui/switch";
 import { v4 as uuidv4 } from 'uuid';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
+import ZeroCostStrategies from '@/components/ZeroCostStrategies';
+import ZeroCostTab from '@/components/ZeroCostTab';
+import ForexDashboard from '@/components/ForexDashboard';
 
 // Currency Pair interface
 interface CurrencyPair {
@@ -83,7 +86,7 @@ export interface StressTestScenario {
 export interface StrategyComponent {
   type: 'call' | 'put' | 'swap' | 'forward' | 
          'call-knockout' | 'call-reverse-knockout' | 'call-double-knockout' | 
-         'put-knockout' | 'put-reverse-knockout' | 'put-double-knockout' | 
+         'put-knockout' | 'put-reverse-knockout' | 'put-double-knockout' |
          'call-knockin' | 'call-reverse-knockin' | 'call-double-knockin' |
          'put-knockin' | 'put-reverse-knockin' | 'put-double-knockin' |
          'one-touch' | 'double-touch' | 'no-touch' | 'double-no-touch' |
@@ -97,6 +100,11 @@ export interface StrategyComponent {
   barrierType?: 'percent' | 'absolute';  // Whether barrier is % of spot or absolute value
   rebate?: number;            // Rebate amount for digital options
   timeToPayoff?: number;      // Time to payoff for one-touch options (in years)
+  dynamicStrike?: {
+    method: 'equilibrium';
+    balanceWithIndex: number;
+    volatilityAdjustment?: number;
+  };
 }
 
 export interface Result {
@@ -110,6 +118,12 @@ export interface Result {
     quantity: number;
     strike: number;
     label: string;
+    dynamicStrikeInfo?: {
+      calculatedStrike: number;
+      calculatedStrikePercent: string;
+      forwardRate: number;
+      timeToMaturity: number;
+    };
   }>;
   strategyPrice: number;
   totalPayoff: number;
@@ -1738,10 +1752,6 @@ const Index = () => {
                 barrierCrossed = realPrice >= barrier;
               }
             }
-            
-            if (barrierCrossed) {
-              isKnockedOut = true;
-            }
           }
           
           // Stocker si l'option est knocked out à ce mois
@@ -1795,10 +1805,6 @@ const Index = () => {
                 // Call Standard KI: Knocked in si prix au-dessus de la barrière
                 barrierHit = realPrice >= barrier;
               }
-            }
-            
-            if (barrierHit) {
-              isKnockedIn = true;
             }
           }
           
@@ -1854,9 +1860,102 @@ const Index = () => {
 
       // Calculer les prix des options en utilisant les chemins de prix
         const optionPrices = options.map((option, optIndex) => {
-            const strike = option.strikeType === 'percent' ? 
-          params.spotPrice * (option.strike/100) : 
-                option.strike;
+            let strike = option.strikeType === 'percent' ? 
+              params.spotPrice * (option.strike/100) : 
+              option.strike;
+            
+            // Check if this option has dynamic strike calculation based on time to maturity
+            if (option.dynamicStrike && option.dynamicStrike.method === 'equilibrium') {
+              // Get the balancing option
+              const balanceWithOption = strategy[option.dynamicStrike.balanceWithIndex];
+              
+              if (balanceWithOption) {
+                // Calculate the strike of the balancing option
+                const balanceWithStrike = balanceWithOption.strikeType === 'percent' ? 
+                  forward * (balanceWithOption.strike/100) : 
+                  balanceWithOption.strike;
+                
+                // Calculate volatility, with adjustment if specified
+                const volAdjustment = option.dynamicStrike.volatilityAdjustment || 1;
+                const balanceWithVol = balanceWithOption.volatility / 100;
+                const currentVol = (option.volatility / 100) * volAdjustment;
+                
+                // Get the type of options
+                const balanceWithType = balanceWithOption.type.includes('put') ? 'put' : 'call';
+                const currentType = option.type.includes('put') ? 'put' : 'call';
+                
+                // Get the domestic and foreign interest rates
+                const r_d = params.domesticRate / 100;
+                const r_f = params.foreignRate / 100;
+                
+                // Calculate the premium of the balancing option for this specific time to maturity
+                // This is important - we use the specific time to maturity for this period
+                const balanceWithPrice = calculateGarmanKohlhagenPrice(
+                  balanceWithType,
+                  forward,
+                  balanceWithStrike,
+                  r_d,
+                  r_f,
+                  t, // Use this period's time to maturity
+                  balanceWithVol
+                );
+                
+                // Find the strike that gives an equivalent premium for the current option
+                let low = forward * 0.5;    // Start with a wide range
+                let high = forward * 1.5;
+                let mid = 0;
+                let price = 0;
+                
+                // Use bisection method to find equilibrium strike
+                for (let iter = 0; iter < 50; iter++) {
+                  mid = (low + high) / 2;
+                  price = calculateGarmanKohlhagenPrice(
+                    currentType,
+                    forward,
+                    mid,
+                    r_d,
+                    r_f,
+                    t, // Use this period's time to maturity
+                    currentVol
+                  );
+                  
+                  // Check if we're close enough
+                  if (Math.abs(price - balanceWithPrice) < 0.0001) {
+                    break;
+                  }
+                  
+                  // Adjust search range based on option type and price comparison
+                  if (price > balanceWithPrice) {
+                    if (currentType === 'call') {
+                      low = mid;
+                    } else { // put
+                      high = mid;
+                    }
+                  } else {
+                    if (currentType === 'call') {
+                      high = mid;
+                    } else { // put
+                      low = mid;
+                    }
+                  }
+                }
+                
+                // Set the dynamically calculated strike for this specific period
+                strike = mid;
+                
+                // Store this as a dynamically calculated strike in an attribute
+                // This will be used to display in the UI
+                option.dynamicStrikeInfo = {
+                  calculatedStrike: strike,
+                  calculatedStrikePercent: (strike / forward * 100).toFixed(2) + '%',
+                  forwardRate: forward,
+                  timeToMaturity: t
+                };
+                
+                // Optional: Log the calculated strike for debugging
+                console.log(`Period ${i} (${monthKey}): Calculated strike for ${currentType} at ${strike.toFixed(4)} (${(strike/forward*100).toFixed(2)}% of forward)`);
+              }
+            }
             
             // Generate a descriptive label based on option type
             let optionLabel = "";
@@ -2084,8 +2183,9 @@ const Index = () => {
           price: price,
               quantity: option.quantity/100,
               strike: strike,
-              label: optionLabel
-            };
+              label: optionLabel,
+              dynamicStrikeInfo: option.dynamicStrike ? option.dynamicStrikeInfo : undefined
+        };
         });
 
       // Add swap and forward prices
@@ -2704,7 +2804,7 @@ const Index = () => {
     localStorage.setItem('calculatorState', JSON.stringify(state));
   };
 
-  // Add this function to prepare content for PDF export
+  // Add function to prepare content for PDF export
   const prepareForPDF = () => {
     // Ensure tables don't break across pages
     const tables = document.querySelectorAll('table');
@@ -3073,11 +3173,11 @@ const Index = () => {
     calculateResults();
   };
 
-  // Mettre à jour le calcul des statistiques mensuelles
+  // Update the monthly statistics calculation
   const calculateMonthlyStats = (data: HistoricalDataPoint[]) => {
     const monthlyData: { [key: string]: number[] } = {};
     
-    // Grouper les prix par mois
+    // Group prices by month
     data.forEach(point => {
         const date = new Date(point.date);
         const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -3087,9 +3187,9 @@ const Index = () => {
         monthlyData[monthKey].push(point.price);
     });
 
-    // Calculer les statistiques pour chaque mois
+    // Calculate statistics for each month
     const stats = Object.entries(monthlyData).map(([month, prices]) => {
-      // Moyenne simple : somme des prix divisée par le nombre de prix
+      // Simple average: sum of prices divided by number of prices
         const avgPrice = prices.reduce((sum, price) => sum + price, 0) / prices.length;
         
         const returns = prices.slice(1).map((price, i) => 
@@ -3110,11 +3210,11 @@ const Index = () => {
 
     setMonthlyStats(stats.sort((a, b) => b.month.localeCompare(a.month)));
     
-    // Ajouter cet appel
+    // Add this call
     updateBacktestValues(stats);
   };
 
-  // Mettre à jour l'affichage des tableaux
+  // Update the table display
   {showHistoricalData && (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse">
@@ -3174,45 +3274,45 @@ const Index = () => {
     setMonthlyStats([]);
   };
 
-  // Modifier la fonction addCurrentStrategyToMatrix
+  // Modify the addCurrentStrategyToMatrix function
   const addCurrentStrategyToMatrix = () => {
     if (strategy.length === 0) {
-      alert("Veuillez d'abord créer une stratégie");
+      alert("Please create a strategy first");
       return;
     }
     
-    // Créer une copie profonde de la stratégie actuelle avec toutes les propriétés
+    // Create a deep copy of the current strategy with all properties
     const strategyCopy = strategy.map(opt => ({
       ...opt,
-      // S'assurer que les propriétés spécifiques des options à barrière sont incluses
+      // Ensure barrier-specific properties are included
       barrier: opt.barrier,
       secondBarrier: opt.secondBarrier,
       barrierType: opt.barrierType || 'percent'
     }));
     
-    // Créer un nom basé sur les composants
+    // Create a name based on the components
     const strategyName = strategyCopy.map(comp => {
       if (comp.type === 'swap') return 'Swap';
       
-      // Traitement des options à barrière
+      // Handle barrier options
       if (comp.type.includes('knockout') || comp.type.includes('knockin')) {
         let optionName = "";
         
-        // Déterminer le type de base (call/put)
+        // Determine base type (call/put)
         if (comp.type.includes('call')) {
           optionName = "Call";
         } else {
           optionName = "Put";
         }
         
-        // Ajouter le type de barrière
+        // Add barrier type
         if (comp.type.includes('double')) {
           optionName += " Dbl";
         } else if (comp.type.includes('reverse')) {
           optionName += " Rev";
         }
         
-        // Ajouter le mécanisme de barrière
+        // Add barrier mechanism
         if (comp.type.includes('knockout')) {
           optionName += " KO";
         } else { // knockin
@@ -3222,7 +3322,7 @@ const Index = () => {
         return optionName;
       }
       
-      // Options standards
+      // Standard options
       return `${comp.type === 'call' ? 'Call' : 'Put'} Option`;
     }).join('/');
     
@@ -3230,66 +3330,66 @@ const Index = () => {
       ...matrixStrategies,
       {
         components: strategyCopy,
-        coverageRatio: 25, // Par défaut 25%
+        coverageRatio: 25, // Default 25%
         name: strategyName
       }
     ]);
   };
 
-  // Modifier la fonction generateRiskMatrix pour ajuster le coût de couverture selon le ratio
+  // Modify the generateRiskMatrix function to adjust coverage cost according to the ratio
   const generateRiskMatrix = () => {
-    // Vérifier si nous avons des résultats
+    // Check if we have results
     if (!results || results.length === 0) {
-      alert("Veuillez d'abord calculer les résultats");
+      alert("Please calculate the results first");
       return;
     }
 
-    // Copier les résultats existants pour les préserver
+    // Copy existing results to preserve them
     const existingResults = [...riskMatrixResults];
     const newResults: RiskMatrixResult[] = [];
     
-    // Pour chaque stratégie configurée
+    // For each configured strategy
     matrixStrategies.forEach(strategyConfig => {
-      // Vérifier si cette stratégie existe déjà dans les résultats
+      // Check if this strategy already exists in the results
       const existingStrategyIndex = existingResults.findIndex(result => 
         result.name === strategyConfig.name && 
         result.coverageRatio === strategyConfig.coverageRatio
       );
       
-      // Si la stratégie existe déjà, utiliser les résultats existants
+      // If the strategy already exists, use the existing results
       if (existingStrategyIndex !== -1) {
         newResults.push(existingResults[existingStrategyIndex]);
         return;
       }
       
-      // Sinon, calculer de nouveaux résultats pour cette stratégie
+      // Otherwise, calculate new results for this strategy
       
-      // Calculer le coût total de la stratégie en tenant compte du ratio de couverture
+      // Calculate the total cost of the strategy taking into account the coverage ratio
       const strategyPremium = results.reduce((sum, row) => {
-        // Appliquer le ratio de couverture au coût de la stratégie
+        // Apply the coverage ratio to the strategy cost
         return sum + (row.strategyPrice * row.monthlyVolume * (strategyConfig.coverageRatio / 100));
       }, 0);
       
       const costs: {[key: string]: number} = {};
       const differences: {[key: string]: number} = {};
       
-      // Pour chaque intervalle de prix
+      // For each price range
       priceRanges.forEach(range => {
         const midPrice = (range.min + range.max) / 2;
         let totalPnL = 0;
         
-        // Simuler chaque mois avec le prix médian constant
+        // Simulate each month with the constant mid price
         for (let i = 0; i < params.monthsToHedge; i++) {
         const monthlyVolume = params.totalVolume / params.monthsToHedge;
           const coveredVolume = monthlyVolume * (strategyConfig.coverageRatio/100);
           
-          // Utiliser les strategyPrice existants des résultats
+          // Use the existing strategyPrice from the results
           const strategyPrice = results[Math.min(i, results.length-1)].strategyPrice;
           
-          // Calculer le payoff pour ce prix médian en utilisant la fonction dédiée
+          // Calculate the payoff for this mid price using the dedicated function
           const totalPayoff = calculateStrategyPayoffAtPrice(strategyConfig.components, midPrice);
 
-          // Calculer les coûts pour ce mois
+          // Calculate the costs for this month
           const unhedgedCost = -(monthlyVolume * midPrice);
           const hedgedCost = -(monthlyVolume * midPrice) + 
             (coveredVolume * totalPayoff) - 
@@ -3298,7 +3398,7 @@ const Index = () => {
           totalPnL += (hedgedCost - unhedgedCost);
         }
         
-        // Stocker le P&L total pour cet intervalle
+        // Store the total P&L for this range
         const rangeKey = `${range.min},${range.max}`;
         differences[rangeKey] = totalPnL;
       });
@@ -3316,42 +3416,42 @@ const Index = () => {
     setRiskMatrixResults(newResults);
   };
 
-  // Ajouter cette fonction pour ajouter une stratégie à la matrice
+  // Add this function to add a strategy to the matrix
   const addMatrixStrategy = () => {
     if (strategy.length === 0) return;
     
-    // Créer une copie profonde de la stratégie actuelle avec toutes les propriétés
+    // Create a deep copy of the current strategy with all properties
     const strategyCopy = strategy.map(opt => ({
       ...opt,
-      // S'assurer que les propriétés spécifiques des options à barrière sont incluses
+      // Ensure barrier-specific properties are included
       barrier: opt.barrier,
       secondBarrier: opt.secondBarrier,
       barrierType: opt.barrierType || 'percent'
     }));
     
-    // Créer un nom basé sur les composants
+    // Create a name based on the components
     const strategyName = strategyCopy.map(comp => {
       if (comp.type === 'swap') return 'Swap';
       
-      // Traitement des options à barrière
+      // Handle barrier options
       if (comp.type.includes('knockout') || comp.type.includes('knockin')) {
         let optionName = "";
         
-        // Déterminer le type de base (call/put)
+        // Determine base type (call/put)
         if (comp.type.includes('call')) {
           optionName = "Call";
         } else {
           optionName = "Put";
         }
         
-        // Ajouter le type de barrière
+        // Add barrier type
         if (comp.type.includes('double')) {
           optionName += " Dbl";
         } else if (comp.type.includes('reverse')) {
           optionName += " Rev";
         }
         
-        // Ajouter le mécanisme de barrière
+        // Add barrier mechanism
         if (comp.type.includes('knockout')) {
           optionName += " KO";
         } else { // knockin
@@ -3361,7 +3461,7 @@ const Index = () => {
         return optionName;
       }
       
-      // Options standards
+      // Standard options
       return `${comp.type === 'call' ? 'Call' : 'Put'} Option`;
     }).join('/');
     
@@ -3369,13 +3469,13 @@ const Index = () => {
       ...matrixStrategies,
       {
         components: strategyCopy,
-        coverageRatio: 25, // Par défaut 25%
+        coverageRatio: 25, // Default 25%
         name: strategyName
       }
     ]);
   };
 
-  // Ajouter cette fonction pour calculer le prix de la stratégie
+  // Add this function to calculate the strategy price
   const calculateStrategyPrice = (components: StrategyComponent[]) => {
     let totalPrice = 0;
     
@@ -3385,14 +3485,14 @@ const Index = () => {
         : comp.strike;
       
       if (comp.type === 'swap') {
-        totalPrice += 0; // Un swap n'a pas de prime
+        totalPrice += 0; // Swap has no premium
       } else {
         const optionPrice = calculateOptionPrice(
           comp.type, 
           params.spotPrice, 
           strike, 
           params.domesticRate/100, 
-          1, // 1 an comme approximation
+          1, // 1 year as approximation
           comp.volatility/100
         );
         totalPrice += optionPrice * comp.quantity;
@@ -3402,7 +3502,7 @@ const Index = () => {
     return totalPrice;
   };
 
-  // Ajouter cette fonction pour calculer le payoff à un prix donné
+  // Add this function to calculate the payoff at a given price
   const calculateStrategyPayoffAtPrice = (components: StrategyComponent[], price: number) => {
     let totalPayoff = 0;
     
@@ -3414,10 +3514,10 @@ const Index = () => {
       let payoff = 0;
       
       if (comp.type === 'swap') {
-        // Pour les swaps, le payoff est la différence entre le prix et le strike
+        // For swaps, the payoff is the difference between the price and the strike
         payoff = (price - strike);
       } else if (comp.type.includes('knockout') || comp.type.includes('knockin')) {
-        // Traitement des options à barrière
+        // Handle barrier options
         const barrier = comp.barrierType === 'percent' 
           ? params.spotPrice * (comp.barrier / 100) 
           : comp.barrier;
@@ -3428,83 +3528,83 @@ const Index = () => {
             : comp.secondBarrier) 
           : undefined;
           
-        // Déterminer si la barrière est franchie
+        // Determine if the barrier is breached
         let isBarrierBroken = false;
         
         if (comp.type.includes('double')) {
-          // Options à double barrière
+          // Double barrier options
           const upperBarrier = Math.max(barrier, secondBarrier || 0);
           const lowerBarrier = Math.min(barrier, secondBarrier || Infinity);
           isBarrierBroken = price >= upperBarrier || price <= lowerBarrier;
         } else if (comp.type.includes('reverse')) {
-          // Options à barrière inversée
+          // Reverse barrier options
           if (comp.type.includes('put')) {
-            // Put Reverse: barrière franchie si le prix est au-dessus
+            // Put Reverse: barrier breached if price is above
             isBarrierBroken = price >= barrier;
           } else {
-            // Call Reverse: barrière franchie si le prix est en-dessous
+            // Call Reverse: barrier breached if price is below
             isBarrierBroken = price <= barrier;
           }
         } else {
-          // Options à barrière standard
+          // Standard barrier options
           if (comp.type.includes('put')) {
-            // Put: barrière franchie si le prix est en-dessous
+            // Put: barrier breached if price is below
             isBarrierBroken = price <= barrier;
           } else {
-            // Call: barrière franchie si le prix est au-dessus
+            // Call: barrier breached if price is above
             isBarrierBroken = price >= barrier;
           }
         }
         
-        // Calculer le payoff de base
+        // Calculate the base payoff
         const isCall = comp.type.includes('call');
         const basePayoff = isCall 
           ? Math.max(0, price - strike) 
           : Math.max(0, strike - price);
         
-        // Déterminer le payoff final selon le type d'option
+        // Determine the final payoff according to the option type
         if (comp.type.includes('knockout')) {
-          // Pour les options knock-out, le payoff est nul si la barrière est franchie
+          // For knock-out options, the payoff is zero if the barrier is breached
           payoff = isBarrierBroken ? 0 : basePayoff;
         } else { // knockin
-          // Pour les options knock-in, le payoff est non-nul seulement si la barrière est franchie
+          // For knock-in options, the payoff is non-zero only if the barrier is breached
           payoff = isBarrierBroken ? basePayoff : 0;
         }
       } else if (comp.type === 'call') {
-        // Option call standard
+        // Standard call option
         payoff = Math.max(0, price - strike);
       } else { // put
-        // Option put standard
+        // Standard put option
         payoff = Math.max(0, strike - price);
       }
       
-      // Ajouter le payoff au total en tenant compte de la quantité
+      // Add the payoff to the total taking into account the quantity
       totalPayoff += payoff * (comp.quantity / 100);
     });
     
     return totalPayoff;
   };
 
-  // Ajouter cette fonction pour supprimer une stratégie
+  // Add this function to remove a strategy
   const removeMatrixStrategy = (index: number) => {
     setMatrixStrategies(matrixStrategies.filter((_, i) => i !== index));
   };
 
-  // Mettre à jour la fonction handleCoverageRatioChange
+  // Update the handleCoverageRatioChange function
   const handleCoverageRatioChange = (index: number, value: number) => {
     const updated = [...matrixStrategies];
     updated[index].coverageRatio = value;
     setMatrixStrategies(updated);
   };
 
-  // Ajouter cette fonction pour manipuler les plages de prix
+  // Add this function to handle price ranges
   const updatePriceRange = (index: number, field: keyof PriceRange, value: number) => {
     const updated = [...priceRanges];
     updated[index][field] = value;
     setPriceRanges(updated);
   };
 
-  // Ajouter cette fonction pour déterminer la couleur des cellules
+  // Add this function to determine cell colors
   const getCellColor = (value: number) => {
     if (value > 0) {
       const intensity = Math.min(value / 100, 1); // Scale appropriately
@@ -3515,13 +3615,13 @@ const Index = () => {
     }
   };
 
-  // Ajouter une fonction pour effacer toutes les stratégies
+  // Add a function to clear all strategies
   const clearAllStrategies = () => {
     setMatrixStrategies([]);
     setRiskMatrixResults([]);
   };
 
-  // Ajouter cette fonction pour sauvegarder la matrice de risque
+  // Add this function to save the risk matrix
   const saveRiskMatrix = () => {
     if (riskMatrixResults.length === 0) {
       alert("No risk matrix results to save");
@@ -3547,7 +3647,7 @@ const Index = () => {
     alert("Risk matrix saved successfully!");
   };
 
-  // Ajouter cette fonction pour exporter la matrice de risque en PDF
+  // Add this function to export the risk matrix to PDF
   const exportRiskMatrixToPDF = async () => {
     if (riskMatrixResults.length === 0) {
       alert("No risk matrix results to export");
@@ -3555,7 +3655,7 @@ const Index = () => {
     }
 
     try {
-      // Créer un élément temporaire pour le contenu du PDF
+      // Create a temporary element for the PDF content
       const tempDiv = document.createElement('div');
       tempDiv.className = 'p-8 bg-white';
       tempDiv.innerHTML = `
@@ -3570,15 +3670,15 @@ const Index = () => {
         </div>
       `;
 
-      // Créer la table des résultats
+      // Create the results table
       const table = document.createElement('table');
       table.className = 'w-full border-collapse';
       table.innerHTML = `
         <thead>
           <tr>
-            <th class="border p-2 text-left">Stratégie</th>
-            <th class="border p-2 text-center">Ratio de couverture</th>
-            <th class="border p-2 text-center">Coût de la couverture (M$)</th>
+            <th class="border p-2 text-left">Strategy</th>
+            <th class="border p-2 text-center">Coverage Ratio</th>
+            <th class="border p-2 text-center">Hedging Cost (M$)</th>
             ${priceRanges.map(range => `
               <th class="border p-2 text-center">${range.probability}%<br>[${range.min},${range.max}]</th>
             `).join('')}
@@ -3608,10 +3708,10 @@ const Index = () => {
       tempDiv.appendChild(table);
       document.body.appendChild(tempDiv);
 
-      // Générer le PDF
+      // Generate the PDF
       const pdf = new jsPDF('landscape', 'pt', 'a4');
       
-      // Utiliser html2canvas pour rendre la table en image
+      // Use html2canvas to render the table as an image
       const canvas = await html2canvas(tempDiv, {
         scale: 2,
         useCORS: true,
@@ -3624,10 +3724,10 @@ const Index = () => {
       
       pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
       
-      // Télécharger le PDF
+      // Download the PDF
       pdf.save('risk_matrix_results.pdf');
       
-      // Nettoyer
+      // Clean up
       document.body.removeChild(tempDiv);
       
     } catch (error) {
@@ -3636,23 +3736,23 @@ const Index = () => {
     }
   };
 
-  // Ajouter cette fonction pour calculer la valeur attendue de chaque stratégie
+  // Add this function to calculate the expected value of each strategy
   const calculateExpectedValue = (result: RiskMatrixResult) => {
     let expectedValue = 0;
     let totalProbability = 0;
     
-    // Parcourir chaque plage de prix
+    // Iterate over each price range
     priceRanges.forEach(range => {
       const rangeKey = `${range.min},${range.max}`;
-      const difference = result.differences[rangeKey]; // Profit/Perte dans cet intervalle
-      const probability = range.probability / 100; // Convertir le pourcentage en décimal
+      const difference = result.differences[rangeKey]; // Profit/Loss in this range
+      const probability = range.probability / 100; // Convert percentage to decimal
       
-      // Ajouter la contribution pondérée de cette plage à la valeur attendue
+      // Add the weighted contribution of this range to the expected value
       expectedValue += difference * probability;
       totalProbability += probability;
     });
     
-    // Normaliser si les probabilités ne somment pas exactement à 1
+    // Normalize if the probabilities don't sum exactly to 1
     if (totalProbability !== 1) {
       expectedValue = expectedValue / totalProbability;
     }
@@ -3660,18 +3760,18 @@ const Index = () => {
     return expectedValue;
   };
 
-  // Ajouter une fonction pour sauvegarder les résultats du backtest historique
+  // Add a function to save the historical backtest results
   const saveHistoricalBacktestResults = () => {
     if (!results) {
-      alert("Pas de résultats à sauvegarder. Veuillez d'abord exécuter le backtest.");
+      alert("No results to save. Please run the backtest first.");
       return;
     }
 
-    // Demander à l'utilisateur de nommer son scénario
-    const scenarioName = prompt("Nom du scénario:", "Historical Backtest " + new Date().toLocaleDateString());
+    // Ask the user to name their scenario
+    const scenarioName = prompt("Scenario name:", "Historical Backtest " + new Date().toLocaleDateString());
     if (!scenarioName) return;
 
-    // Créer un nouvel objet scénario
+    // Create a new scenario object
     const newScenario: SavedScenario = {
       id: uuidv4(),
       name: scenarioName,
@@ -3680,15 +3780,15 @@ const Index = () => {
       strategy: [...strategy],
       results: [...results],
       payoffData: [...payoffData],
-      // Indiquer que c'est un backtest historique
+      // Indicate that it's a historical backtest
       stressTest: {
         name: "Historical Backtest",
         description: "Calculated from historical data",
-        volatility: 0,  // Ces valeurs ne sont pas utilisées dans le backtest historique
-        drift: 0,       // mais sont nécessaires pour la structure
+        volatility: 0,  // These values are not used in the historical backtest
+        drift: 0,       // but are needed for the structure
         priceShock: 0,
-        isHistorical: true,  // Marquer comme backtest historique
-        historicalData: [...historicalData]  // Ajouter les données historiques
+        isHistorical: true,  // Mark as historical backtest
+        historicalData: [...historicalData]  // Add the historical data
       },
       useImpliedVol,
       impliedVolatilities,
@@ -3697,29 +3797,29 @@ const Index = () => {
       customOptionPrices
     };
 
-    // Récupérer les scénarios existants
+    // Get existing scenarios
     const savedScenariosStr = localStorage.getItem('optionScenarios');
     const savedScenarios: SavedScenario[] = savedScenariosStr 
       ? JSON.parse(savedScenariosStr) 
       : [];
     
-    // Ajouter le nouveau scénario
+    // Add the new scenario
     savedScenarios.push(newScenario);
     
-    // Sauvegarder dans localStorage
+    // Save to localStorage
     localStorage.setItem('optionScenarios', JSON.stringify(savedScenarios));
     
-    alert("Scénario sauvegardé avec succès!");
+    alert("Scenario saved successfully!");
   };
 
-  // Ajouter une fonction pour exporter les résultats du backtest historique en PDF
+  // Add a function to export the historical backtest results to PDF
   const exportHistoricalBacktestToPDF = () => {
     if (!results) {
-      alert("Pas de résultats à exporter. Veuillez d'abord exécuter le backtest.");
+      alert("No results to export. Please run the backtest first.");
       return;
     }
 
-    // Configurer jsPDF
+    // Set up jsPDF
     const doc = new jsPDF('p', 'mm', 'a4');
     const pageWidth = doc.internal.pageSize.getWidth();
     
@@ -3734,7 +3834,7 @@ const Index = () => {
       }
     };
     
-    // Titre
+    // Title
     doc.setFontSize(18);
     doc.text('Historical Backtest Results', pageWidth / 2, 15, { align: 'center' });
     
@@ -3742,7 +3842,7 @@ const Index = () => {
     doc.setFontSize(12);
     doc.text(`Generated on ${new Date().toLocaleDateString()}`, pageWidth / 2, 25, { align: 'center' });
     
-    // Paramètres de base
+    // Basic parameters
     doc.setFontSize(14);
     doc.text('Basic Parameters', 10, 35);
     doc.setFontSize(10);
@@ -3753,7 +3853,7 @@ const Index = () => {
       doc.text(`Quote Volume (${params.currencyPair?.quote || 'QUOTE'}): ${Math.round(params.quoteVolume).toLocaleString()}`, 15, 70);
       doc.text(`Current Spot Rate: ${params.spotPrice.toFixed(4)}`, 15, 80);
     
-    // Stratégie
+    // Strategy
     doc.setFontSize(14);
     doc.text('Strategy Components', 10, 75);
     strategy.forEach((comp, index) => {
@@ -3777,7 +3877,7 @@ const Index = () => {
       }%`, 15, 135);
     }
     
-    // Résultats totaux
+    // Total results
     const totalHedgedCost = results.reduce((sum, row) => sum + row.hedgedCost, 0);
     const totalUnhedgedCost = results.reduce((sum, row) => sum + row.unhedgedCost, 0);
     const totalPnL = results.reduce((sum, row) => sum + row.deltaPnL, 0);
@@ -3791,7 +3891,7 @@ const Index = () => {
     doc.text(`Total P&L: ${totalPnL.toFixed(2)}`, 15, 170);
     doc.text(`Cost Reduction: ${costReduction.toFixed(2)}%`, 15, 175);
     
-    // Capturer le graphique P&L et l'ajouter
+    // Capture the P&L chart and add it
     const pnlChartContainer = document.getElementById('historical-backtest-pnl-chart');
     if (pnlChartContainer) {
       doc.addPage();
@@ -3807,7 +3907,7 @@ const Index = () => {
         const imgData = canvas.toDataURL('image/png');
         doc.addImage(imgData, 'PNG', 10, 25, 190, 100);
         
-        // Sauvegarder le PDF
+        // Save the PDF
         doc.save('Historical_Backtest_Results.pdf');
       });
     } else {
@@ -3815,33 +3915,33 @@ const Index = () => {
     }
   };
 
-  // Ajouter cette fonction après clearAllStrategies
+  // Add this function after clearAllStrategies
   const generateGeneralRiskAnalysis = () => {
-    // Vérifier si nous avons des résultats
+    // Check if we have results
     if (!results || results.length === 0) {
-      alert("Veuillez d'abord calculer les résultats");
+      alert("Please calculate the results first");
       return;
     }
     
-    // Vérifier qu'il y a au moins une stratégie
+    // Check if there is at least one strategy
     if (matrixStrategies.length === 0) {
-      alert("Veuillez d'abord ajouter au moins une stratégie à la matrice");
+      alert("Please add at least one strategy to the matrix first");
       return;
     }
 
-    // Sauvegarder les stratégies existantes
+    // Save existing strategies
     const existingStrategies = [...matrixStrategies];
     
-    // Préparer les ratios à appliquer
+    // Prepare the ratios to apply
     const coverageRatios = [25, 50, 75, 100];
     const analysisStrategies = [];
     
-    // Pour chaque stratégie existante, créer des versions avec différents ratios
+    // For each existing strategy, create versions with different ratios
     existingStrategies.forEach(strategy => {
-      // Le nom de base de la stratégie 
-      const baseName = strategy.name.replace(/\s\d+%$/, ''); // Retirer le % s'il existe déjà
+      // Base name of the strategy 
+      const baseName = strategy.name.replace(/\s\d+%$/, ''); // Remove % if already exists
       
-      // Créer 4 versions avec différents ratios
+      // Create 4 versions with different ratios
       coverageRatios.forEach(ratio => {
         analysisStrategies.push({
           name: `${baseName} ${ratio}%`,
@@ -3851,22 +3951,22 @@ const Index = () => {
       });
     });
     
-    // Définir les stratégies pour la matrice
+    // Set the strategies for the matrix
     setMatrixStrategies(analysisStrategies);
     
-    // Générer la matrice avec ces stratégies
+    // Generate the matrix with these strategies
     setTimeout(() => {
       generateRiskMatrix();
     }, 100);
   };
 
-  // Ajouter un état pour suivre si l'affichage est en mode variations
+  // Add a state to track if the display is in coverage variations mode
   const [showCoverageVariations, setShowCoverageVariations] = useState(false);
 
-  // Ajouter la fonction pour réorganiser l'affichage de la matrice
+  // Add the function to rearrange the matrix display
   const toggleCoverageVariations = () => {
     if (!riskMatrixResults.length) {
-      alert("Veuillez d'abord générer la matrice de risque");
+      alert("Please generate the risk matrix first");
       return;
     }
     
@@ -4042,7 +4142,7 @@ const Index = () => {
       );
       
       // Générer des chemins simples pour les options barrière si nécessaire
-      // Même si useSimulation est false, nous voulons générer des chemins pour les options à barrière
+      // Même si useSimulation est false, nous voulons générer des chemins pour les options barrière
       const pathsData = generatePricePathsForPeriod(months, startDate, 100); // Utiliser seulement 100 simulations pour les options barrière
       paths = pathsData.paths;
       monthlyIndices = pathsData.monthlyIndices;
@@ -4833,11 +4933,13 @@ const Index = () => {
         </div>
       )}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="parameters">Strategy Parameters</TabsTrigger>
-          <TabsTrigger value="stress">Stress Testing</TabsTrigger>
-          <TabsTrigger value="backtest">Historical Backtest</TabsTrigger>
-          <TabsTrigger value="riskmatrix">Risk Matrix Generator</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-6 mb-4">
+          <TabsTrigger value="parameters" className="py-2.5">Strategy Parameters</TabsTrigger>
+          <TabsTrigger value="stress" className="py-2.5">Stress Testing</TabsTrigger>
+          <TabsTrigger value="backtest" className="py-2.5">Historical Backtest</TabsTrigger>
+          <TabsTrigger value="riskmatrix" className="py-2.5">Risk Matrix Generator</TabsTrigger>
+          <TabsTrigger value="zerocost" className="py-2.5">Zero-Cost FX Strategies</TabsTrigger>
+          <TabsTrigger value="forexdashboard" className="py-2.5">Forex Market</TabsTrigger>
         </TabsList>
         
         <TabsContent value="parameters">
@@ -6342,6 +6444,19 @@ const Index = () => {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="zerocost">
+          <ZeroCostTab 
+            spotPrice={params.spotPrice}
+            setStrategy={setStrategy}
+            calculatePayoff={calculatePayoff}
+            monthsToHedge={params.monthsToHedge}
+          />
+        </TabsContent>
+
+        <TabsContent value="forexdashboard">
+          <ForexDashboard />
+        </TabsContent>
       </Tabs>
 
       {results && (
@@ -6395,14 +6510,26 @@ const Index = () => {
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Time to Maturity</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-blue-500/5">Forward FX Rate</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/5">Spot FX Rate</th>
-                      {useImpliedVol && results[0].optionPrices.map((opt, i) => (
-                        opt.type !== 'swap' && (
-                          <th key={`iv-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">
-                            IV {opt.label} (%)
-                          </th>
-                        )
-                      ))}
-                      {results[0].optionPrices.map((opt, i) => (
+                          
+                          {/* Ajouter des colonnes pour les strikes dynamiques si présents */}
+                          {strategy.some(opt => opt.dynamicStrike) && results && results.length > 0 && 
+                            strategy.map((opt, idx) => 
+                              opt.dynamicStrike ? (
+                                <th key={`dyn-strike-${idx}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-yellow-500/10">
+                                  {opt.type.includes('put') ? 'Put' : 'Call'} Strike {idx + 1}
+                                </th>
+                              ) : null
+                            )
+                          }
+                          
+                          {useImpliedVol && results[0].optionPrices.map((opt, i) => (
+                            opt.type !== 'swap' && (
+                              <th key={`iv-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">
+                                IV {opt.label} (%)
+                              </th>
+                            )
+                          ))}
+                          {results[0].optionPrices.map((opt, i) => (
                             <th key={`opt-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b">{opt.label}</th>
                           ))}
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-green-500/5">Strategy Price</th>
@@ -6476,14 +6603,46 @@ const Index = () => {
                             disabled={realPriceParams.useSimulation}
                           />
                         </td>
-                          {useImpliedVol && results[0].optionPrices.map((opt, i) => (
+                          {/* Ajouter des cellules pour les strikes dynamiques si présents */}
+                          {strategy.some(opt => opt.dynamicStrike) && 
+                            strategy.map((opt, idx) => {
+                              if (!opt.dynamicStrike) return null;
+                              
+                              // Trouver l'option correspondante dans le résultat
+                              const resultOption = row.optionPrices.find(
+                                o => o.label.includes(opt.type.includes('put') ? 'Put' : 'Call') && 
+                                     o.label.endsWith(`${idx + 1}`)
+                              );
+                              
+                              // Afficher le strike dynamique si disponible
+                              if (resultOption && resultOption.dynamicStrikeInfo) {
+                                return (
+                                  <td key={`dyn-strike-${idx}-${i}`} className="px-3 py-2 text-sm border-b border-border/30 bg-yellow-500/10 font-mono">
+                                    {resultOption.strike.toFixed(4)}
+                                    <br />
+                                    <span className="text-xs text-muted-foreground">
+                                      ({(resultOption.strike / row.forward * 100).toFixed(1)}%)
+                                    </span>
+                                  </td>
+                                );
+                              }
+                              
+                              // Fallback si les informations ne sont pas disponibles
+                              return (
+                                <td key={`dyn-strike-${idx}-${i}`} className="px-3 py-2 text-sm border-b border-border/30 bg-yellow-500/10">
+                                  {resultOption ? resultOption.strike.toFixed(4) : '-'}
+                                </td>
+                              );
+                            })
+                          }
+                          {useImpliedVol && results[0].optionPrices.map((opt, j) => (
                             opt.type !== 'swap' && (
-                              <td key={`iv-${i}`} className="px-3 py-2 text-sm border-b border-border/30 bg-amber-500/5">
+                              <td key={`iv-${j}`} className="px-3 py-2 text-sm border-b border-border/30 bg-amber-500/5">
                               <div className="flex flex-col">
                               <Input
                                 type="number"
-                                  value={impliedVolatilities[monthKey]?.[`${opt.type}-${i}`] || ''}
-                                  onChange={(e) => handleOptionImpliedVolChange(monthKey, `${opt.type}-${i}`, Number(e.target.value))}
+                                  value={impliedVolatilities[monthKey]?.[`${opt.type}-${j}`] || ''}
+                                  onChange={(e) => handleOptionImpliedVolChange(monthKey, `${opt.type}-${j}`, Number(e.target.value))}
                                   className="compact-input w-24"
                                 placeholder="Enter IV"
                               />
@@ -6700,7 +6859,6 @@ const Index = () => {
                   <MonteCarloVisualization 
                     simulationData={{
                       ...simulationData,
-                      // S'assurer que nous avons toujours les bonnes données pour les chemins d'options à barrière
                       
                     }} 
                   />
