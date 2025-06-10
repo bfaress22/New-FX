@@ -255,7 +255,7 @@ const DEFAULT_SCENARIOS = {
 };
 
 // Currency Pairs Database with current market rates (approximate)
-const CURRENCY_PAIRS: CurrencyPair[] = [
+export const CURRENCY_PAIRS: CurrencyPair[] = [
   // Major Pairs
   { symbol: "EUR/USD", name: "Euro/US Dollar", base: "EUR", quote: "USD", category: "majors", defaultSpotRate: 1.0850 },
   { symbol: "GBP/USD", name: "British Pound/US Dollar", base: "GBP", quote: "USD", category: "majors", defaultSpotRate: 1.2650 },
@@ -725,6 +725,9 @@ const Index = () => {
 
   // Ajouter un état pour stocker les volumes personnalisés par mois
   const [customVolumes, setCustomVolumes] = useState<Record<string, number>>({});
+
+  // Ajouter un état pour l'onglet actif des résultats
+  const [activeResultsTab, setActiveResultsTab] = useState('detailed');
 
   // Ajouter une fonction pour gérer les changements de volume
   const handleVolumeChange = (monthKey: string, newVolume: number) => {
@@ -1861,8 +1864,8 @@ const Index = () => {
       // Calculer les prix des options en utilisant les chemins de prix
         const optionPrices = options.map((option, optIndex) => {
             let strike = option.strikeType === 'percent' ? 
-              params.spotPrice * (option.strike/100) : 
-              option.strike;
+          params.spotPrice * (option.strike/100) : 
+                option.strike;
             
             // Check if this option has dynamic strike calculation based on time to maturity
             if (option.dynamicStrike && option.dynamicStrike.method === 'equilibrium') {
@@ -2185,7 +2188,7 @@ const Index = () => {
               strike: strike,
               label: optionLabel,
               dynamicStrikeInfo: option.dynamicStrike ? option.dynamicStrikeInfo : undefined
-        };
+            };
         });
 
       // Add swap and forward prices
@@ -6455,19 +6458,66 @@ const Index = () => {
         </TabsContent>
 
         <TabsContent value="forexdashboard">
-          <ForexDashboard />
+          <ForexDashboard 
+            onRateSelected={(pair, rate) => {
+              // Mettre à jour le spot price
+              setParams(prev => ({
+                ...prev,
+                spotPrice: rate
+              }));
+              
+              // Trouver la paire de devises correspondante
+              const currencyPair = CURRENCY_PAIRS.find(cp => cp.symbol === pair);
+              if (currencyPair) {
+                // Mettre à jour la paire de devises sélectionnée
+                setParams(prev => ({
+                  ...prev,
+                  currencyPair: currencyPair
+                }));
+              }
+
+              // Mettre à jour initialSpotPrice qui est utilisé pour calculer les forward rates
+              setInitialSpotPrice(rate);
+              
+              // Réinitialiser les forward rates manuels pour qu'ils soient recalculés
+              setManualForwards({});
+
+              // Recalculer tous les résultats qui dépendent du spot price
+              calculateResults();
+              
+              // Afficher une notification
+              toast({
+                title: "Rate Updated",
+                description: `Spot rate updated to ${rate} for ${pair}`,
+              });
+            }}
+            currentPair={params.currencyPair?.symbol || "EUR/USD"}
+          />
         </TabsContent>
       </Tabs>
 
       {results && (
-        <>
-          <Card className="shadow-lg border border-border/40 overflow-hidden">
-            <CardHeader className="bg-gradient-to-r from-primary/10 to-transparent pb-3 border-b">
-              <CardTitle className="text-xl font-bold text-primary flex items-center gap-2">
-                <Table className="h-5 w-5" />
-                Detailed Results
-              </CardTitle>
-            </CardHeader>
+        <div className="mt-6">
+          <Tabs value={activeResultsTab} onValueChange={setActiveResultsTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 mb-6">
+              <TabsTrigger value="detailed" className="text-xs">Detailed Results</TabsTrigger>
+              <TabsTrigger value="pnl-evolution" className="text-xs">P&L Evolution</TabsTrigger>
+              <TabsTrigger value="fx-rates" className="text-xs">Spot vs Forward</TabsTrigger>
+              <TabsTrigger value="hedging-profile" className="text-xs">FX HEDGING PROFILE</TabsTrigger>
+              <TabsTrigger value="monte-carlo" className="text-xs">Monte Carlo</TabsTrigger>
+              <TabsTrigger value="yearly-stats" className="text-xs">Yearly Statistics</TabsTrigger>
+              <TabsTrigger value="total-stats" className="text-xs">Total Statistics</TabsTrigger>
+              <TabsTrigger value="monthly-breakdown" className="text-xs">Monthly Breakdown</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="detailed">
+              <Card className="shadow-lg border border-border/40 overflow-hidden">
+                <CardHeader className="bg-gradient-to-r from-primary/10 to-transparent pb-3 border-b">
+                  <CardTitle className="text-xl font-bold text-primary flex items-center gap-2">
+                    <Table className="h-5 w-5" />
+                    Detailed Results
+                  </CardTitle>
+                </CardHeader>
             <CardContent className="p-0">
               {results.length > 0 && (
                 <div>
@@ -6522,14 +6572,14 @@ const Index = () => {
                             )
                           }
                           
-                          {useImpliedVol && results[0].optionPrices.map((opt, i) => (
-                            opt.type !== 'swap' && (
-                              <th key={`iv-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">
-                                IV {opt.label} (%)
-                              </th>
-                            )
-                          ))}
-                          {results[0].optionPrices.map((opt, i) => (
+                      {useImpliedVol && results[0].optionPrices.map((opt, i) => (
+                        opt.type !== 'swap' && (
+                          <th key={`iv-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-amber-500/5">
+                            IV {opt.label} (%)
+                          </th>
+                        )
+                      ))}
+                      {results[0].optionPrices.map((opt, i) => (
                             <th key={`opt-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b">{opt.label}</th>
                           ))}
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-green-500/5">Strategy Price</th>
@@ -6723,11 +6773,13 @@ const Index = () => {
               )}
             </CardContent>
           </Card>
+            </TabsContent>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>P&L Evolution</CardTitle>
-            </CardHeader>
+            <TabsContent value="pnl-evolution">
+              <Card>
+                <CardHeader>
+                  <CardTitle>P&L Evolution</CardTitle>
+                </CardHeader>
             <CardContent>
               <div className="h-96">
                 <ResponsiveContainer width="100%" height="100%">
@@ -6743,11 +6795,13 @@ const Index = () => {
               </div>
             </CardContent>
           </Card>
+            </TabsContent>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Spot vs Forward FX Rates</CardTitle>
-            </CardHeader>
+            <TabsContent value="fx-rates">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Spot vs Forward FX Rates</CardTitle>
+                </CardHeader>
             <CardContent>
               <div className="h-96">
                 <ResponsiveContainer width="100%" height="100%">
@@ -6774,24 +6828,28 @@ const Index = () => {
               </div>
             </CardContent>
           </Card>
+            </TabsContent>
 
-          {payoffData.length > 0 && (
-            <PayoffChart
-              data={payoffData}
-              strategy={strategy}
-              spot={params.spotPrice}
-              currencyPair={params.currencyPair}
-              includePremium={true}
-              className="mt-6"
-            />
-          )}
+            <TabsContent value="hedging-profile">
+              {payoffData.length > 0 && (
+                <PayoffChart
+                  data={payoffData}
+                  strategy={strategy}
+                  spot={params.spotPrice}
+                  currencyPair={params.currencyPair}
+                  includePremium={true}
+                  className="mt-6"
+                />
+              )}
+            </TabsContent>
 
-          {/* Monte Carlo Simulation Card */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Monte Carlo Simulation</CardTitle>
-              <CardDescription>Visualize price paths and option price evolution</CardDescription>
-            </CardHeader>
+            <TabsContent value="monte-carlo">
+              {/* Monte Carlo Simulation Card */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Monte Carlo Simulation</CardTitle>
+                  <CardDescription>Visualize price paths and option price evolution</CardDescription>
+                </CardHeader>
             <CardContent>
               <div className="flex flex-row justify-between mb-4">
                 <div>
@@ -6906,11 +6964,13 @@ const Index = () => {
               )}
             </CardContent>
           </Card>
+            </TabsContent>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Summary Statistics by Year</CardTitle>
-            </CardHeader>
+            <TabsContent value="yearly-stats">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Summary Statistics by Year</CardTitle>
+                </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 {(() => {
@@ -6968,11 +7028,13 @@ const Index = () => {
               </div>
             </CardContent>
           </Card>
+            </TabsContent>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Total Summary Statistics</CardTitle>
-            </CardHeader>
+            <TabsContent value="total-stats">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Total Summary Statistics</CardTitle>
+                </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse">
@@ -7043,11 +7105,13 @@ const Index = () => {
               </div>
             </CardContent>
           </Card>
+            </TabsContent>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Monthly & Yearly P&L Breakdown</CardTitle>
-            </CardHeader>
+            <TabsContent value="monthly-breakdown">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Monthly & Yearly P&L Breakdown</CardTitle>
+                </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 {results.length > 0 && (() => {
@@ -7164,7 +7228,9 @@ const Index = () => {
               </div>
             </CardContent>
           </Card>
-        </>
+            </TabsContent>
+          </Tabs>
+        </div>
       )}
     </div>
   );
